@@ -101,6 +101,43 @@ class TextTests(unittest.TestCase):
                          "https://gptzero.me/news/iclr-2026/")
         self.assertEqual(cc.find_doi({"url": "https://doi.org/10.1145/3292500.3330701."}), "10.1145/3292500.3330701")
 
+    def test_comment_line_inside_entry(self):
+        fields, errors = cc.parse_bibtex("@article{a,\n  title = {T},\n  % note = {old},\n  year = 2017\n}")
+        self.assertEqual((errors, fields[0]["year"]), ([], "2017"))
+
+    def test_subtitle_after_period(self):
+        self.assertGreaterEqual(cc.title_sim("Planck 2018 results. VI. Cosmological parameters",
+                                             "Planck 2018 results"), cc.TITLE_NEAR)
+
+    def test_cited_keys_markdown(self):
+        import tempfile
+        text = ("As in [@smith2020; -@doe2019, p. 3] and @lee2021.\nSee @fig-plot and @tbl-one.\n"
+                "Mail me@example.com.\n```python\n@property\n```\n")
+        with tempfile.NamedTemporaryFile("w", suffix=".qmd", delete=False) as fh:
+            fh.write(text)
+        try:
+            self.assertEqual(cc.cited_keys([fh.name]), {"smith2020", "doe2019", "lee2021"})
+        finally:
+            os.unlink(fh.name)
+
+    def test_collect_inputs(self):
+        import tempfile
+        import zipfile
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "paper", "sections"))
+            for name, text in (("refs.bib", "@misc{a, title={T}}"), ("sections/more.bib", "@misc{b, title={U}}")):
+                with open(os.path.join(d, "paper", name), "w") as fh:
+                    fh.write(text)
+            bibs, roots = cc.collect_inputs([os.path.join(d, "paper")], d)
+            self.assertEqual([os.path.basename(b) for b in bibs], ["refs.bib", "more.bib"])
+            with zipfile.ZipFile(os.path.join(d, "overleaf.zip"), "w") as z:
+                z.writestr("main.tex", "\\cite{a}")
+                z.writestr("refs.bib", "@misc{a, title={T}}")
+            bibs, roots = cc.collect_inputs([os.path.join(d, "overleaf.zip")], d)
+            self.assertEqual(cc.cited_keys(roots), {"a"})
+            with self.assertRaises(cc.InputError):
+                cc.collect_inputs([os.path.join(d, "missing.bib")], d)
+
     def test_cited_keys(self):
         import tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".tex", delete=False) as fh:
@@ -117,7 +154,8 @@ REAL = cc._record("Semantic Scholar", "Attention Is All You Need",
 
 def entry(**kw):
     base = {"key": "k", "type": "article", "title": "Attention Is All You Need",
-            "authors": ["Vaswani, Ashish", "Shazeer, Noam"], "year": 2017, "doi": "", "arxiv": "", "url": ""}
+            "authors": ["Vaswani, Ashish", "Shazeer, Noam", "Parmar, Niki"], "year": 2017, "doi": "", "arxiv": "", "url": "",
+            "venue": "", "venue_text": "", "etal": False}
     base.update(kw)
     return base
 
@@ -130,7 +168,8 @@ class VerdictTests(unittest.TestCase):
         http.status.return_value = url_status
         checker = cc.Checker(http)
         checker.arxiv = arxiv_ids or {}
-        patches = [mock.patch.object(cc, "s2_match", side_effect=self._fake(s2)),
+        patches = [mock.patch.object(cc, "dblp_db", return_value=None),
+                   mock.patch.object(cc, "s2_match", side_effect=self._fake(s2)),
                    mock.patch.object(cc, "openalex_search", side_effect=self._fake(openalex)),
                    mock.patch.object(cc, "crossref_search", side_effect=self._fake(crossref)),
                    mock.patch.object(cc, "arxiv_title", side_effect=self._fake(arxiv)),
@@ -156,7 +195,7 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(r["verdict"], "NOT_FOUND")
 
     def test_chimeric_authors_mismatch(self):
-        r = self.run_check(entry(authors=["Smith, John", "Doe, Jane"]), s2=[REAL])
+        r = self.run_check(entry(authors=["Smith, John", "Doe, Jane"]), s2=[REAL])  # chimeric
         self.assertEqual(r["verdict"], "MISMATCH")
 
     def test_wrong_year_and_title_typo_check(self):
@@ -199,10 +238,112 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(r["verdict"], "CHECK")  # found; only the wording differs (Nets vs Networks)
         self.assertEqual(r["match"]["authors"][0], "Ian Goodfellow")
 
+    def test_retitled_preprint_is_not_a_wrong_id(self):
+        preprint = cc._record("arXiv", "Is the 2MASS clustering dipole convergent?",
+                              ["Maciej Bilicki", "Michal Chodorowski"], 2011, arxiv="1102.4356")
+        e = entry(title="Is the Two Micron All Sky Survey Clustering Dipole Convergent?",
+                  authors=["Bilicki, Maciej", "Chodorowski, Micha{\\l}"], year=2011, arxiv="1102.4356")
+        published = cc._record("Crossref", e["title"], ["Maciej Bilicki", "Michał Chodorowski"], 2011)
+        r = self.run_check(e, crossref=[published], arxiv_ids={"1102.4356": preprint})
+        self.assertEqual(r["verdict"], "VERIFIED")
+        self.assertTrue(any("retitled" in n for n in r["notes"]))
+
+    def test_unindexed_type_is_check_not_not_found(self):
+        r = self.run_check(entry(type="phdthesis", title="Selected Topics in Relativistic Cosmology"))
+        self.assertEqual(r["verdict"], "CHECK")
+        r = self.run_check(entry(title="A note on importance sampling using standardized weights",
+                                 venue_text="University of Chicago, Dept. of Statistics, Tech. Rep"))
+        self.assertEqual(r["verdict"], "CHECK")
+
+    def test_book_year_not_compared(self):
+        book = cc._record("Crossref", "Gravitation", ["C. W. Misner", "K. S. Thorne"], 1973)
+        e = entry(type="book", title="Gravitation", authors=["Misner, Charles W.", "Thorne, Kip S."], year=2017)
+        self.assertEqual(self.run_check(e, crossref=[book])["verdict"], "VERIFIED")
+
+    def test_retracted_work_is_flagged(self):
+        retracted = dict(REAL, notices=["retracted"])
+        r = self.run_check(entry(), s2=[retracted])
+        self.assertEqual(r["verdict"], "CHECK")
+        self.assertIn("retracted", r["issues"][0])
+
+    def test_suggested_bibtex_uses_record_and_keeps_key(self):
+        r = self.run_check(entry(key="song2020", authors=["Song, Yang", "Ermon, Stefano"]), s2=[REAL])
+        bib = cc.suggested_bibtex(r)
+        fields, errors = cc.parse_bibtex(bib)
+        self.assertEqual((errors, fields[0]["key"]), ([], "song2020"))
+        self.assertIn("Ashish Vaswani", fields[0]["author"])
+        self.assertIn("% 2 of 2 cited authors", bib)
+
+    def test_fabricated_title_with_the_authors_real_doi_is_mismatch(self):
+        other = cc._record("DOI", "Overcoming Catastrophic Forgetting in Graph Neural Networks with Experience Replay",
+                           ["Fan Zhou", "Chengtai Cao"], 2021, doi="10.1609/aaai.v35i5.16602")
+        e = entry(title="Prompt-Tuning Strategies for Instruction-Following Models", year=2021,
+                  authors=["Zhou, Fan", "Cao, Chengtai"], doi="10.1609/aaai.v35i5.16602")
+        r = self.run_check(e, doi=other)
+        self.assertIn(r["verdict"], ("MISMATCH", "NOT_FOUND"))
+        self.assertTrue(any("different work" in i for i in r["issues"]))
+
+    def test_future_year_is_mismatch(self):
+        self.assertEqual(self.run_check(entry(year=cc.THIS_YEAR + 5), s2=[REAL])["verdict"], "MISMATCH")
+
+    def test_changed_title_word_is_check_but_hyphenation_is_not(self):
+        rec = cc._record("DBLP", "Structural Multiplane Image: Bridging Neural View Synthesis and 3D Reconstruction",
+                         ["Mingfang Zhang", "Jinglu Wang"], 2023)
+        e = entry(title="Structural Multiplane Visual: Bridging Neural View Synthesis and 3D Reconstruction",
+                  authors=["Zhang, Mingfang", "Wang, Jinglu"], year=2023)
+        r = self.run_check(e, s2=[rec])
+        self.assertEqual(r["verdict"], "CHECK")
+        self.assertIn('"visual" vs "image"', r["issues"][0])
+        e2 = dict(e, title="Structural Multi-plane Image: Bridging Neural View-Synthesis and 3D Reconstructions")
+        self.assertEqual(self.run_check(e2, s2=[rec])["verdict"], "VERIFIED")
+
+    def test_truncated_author_list(self):
+        rec = cc._record("DBLP", "Attention Is All You Need",
+                         ["Ashish Vaswani", "Noam Shazeer", "Niki Parmar", "Jakob Uszkoreit"], 2017)
+        self.assertEqual(self.run_check(entry(), s2=[rec])["verdict"], "CHECK")
+        self.assertEqual(self.run_check(entry(etal=True), s2=[rec])["verdict"], "VERIFIED")
+
+    def test_venue(self):
+        rec = cc._record("DBLP", "Attention Is All You Need", ["Ashish Vaswani", "Noam Shazeer", "Niki Parmar"], 2017,
+                         venue="NIPS")
+        self.assertEqual(self.run_check(entry(venue="Advances in Neural Information Processing Systems"),
+                                        s2=[rec])["verdict"], "VERIFIED")
+        r = self.run_check(entry(venue="ICML"), s2=[rec])
+        self.assertEqual(r["verdict"], "CHECK")
+        self.assertIn("ICML", r["issues"][0])
+        self.assertEqual(cc.venue_ids("Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern "
+                                      "Recognition (CVPR)"), {"CVPR"})
+        self.assertEqual(cc.venue_ids("J. Mach. Learn. Res."), {"JMLR"})
+        self.assertEqual(cc.venue_ids("Proc. 37th Int. Conf. Mach. Learn."), {"ICML"})
+        self.assertIn("ICML", cc.venue_ids("Proceedings of Machine Learning Research"))
+
+    def test_unrecognised_cited_venue(self):
+        rec = cc._record("DBLP", "Attention Is All You Need", ["Ashish Vaswani", "Noam Shazeer", "Niki Parmar"], 2017,
+                         venue="NIPS")
+        with mock.patch.object(cc, "dblp_db", return_value=object()), \
+                mock.patch.object(cc, "dblp_search", return_value=[rec]):
+            r = cc.Checker(mock.Mock()).check(entry(venue="Symposium on Neural Scaling Laws"))
+        self.assertEqual(r["verdict"], "CHECK")
+        self.assertIn("Symposium on Neural Scaling Laws", r["issues"][0])
+
+    def test_stopword_swap_in_title(self):
+        self.assertEqual(cc.title_changes("Learning to Summarize with Human Feedback",
+                                          "Learning to summarize from human feedback"), [("with", "from")])
+        self.assertEqual(cc.title_changes("A Survey of Graph Networks", "Survey of Graph Networks"), [])
+
+    def test_et_al_in_names(self):
+        self.assertEqual(cc.split_names("A. Smith et al."), ["A. Smith"])
+        self.assertEqual(cc.split_names("Smith, A. and et al."), ["Smith, A."])
+
+    def test_duplicates(self):
+        r1 = {"key": "ho2020", "match": REAL}
+        r2 = {"key": "song2020", "match": dict(REAL, source="Crossref")}
+        self.assertEqual(cc.duplicates([r1, r2, {"key": "x", "match": None}]), [["ho2020", "song2020"]])
+
     def test_same_title_different_paper_prefers_author_match(self):
         lecun = cc._record("Semantic Scholar", "Deep learning", ["Yann LeCun", "Yoshua Bengio"], 2015)
         book = cc._record("Crossref", "Deep Learning", ["Ian Goodfellow", "Yoshua Bengio", "Aaron Courville"], 2016)
-        e = entry(title="Deep Learning", authors=["Goodfellow, Ian", "Courville, Aaron"], year=2016)
+        e = entry(title="Deep Learning", authors=["Goodfellow, Ian", "Bengio, Yoshua", "Courville, Aaron"], year=2016)
         r = self.run_check(e, s2=[lecun], crossref=[book])
         self.assertEqual(r["verdict"], "VERIFIED")
         self.assertEqual(r["match"]["source"], "Crossref")
