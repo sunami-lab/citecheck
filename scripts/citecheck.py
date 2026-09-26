@@ -649,13 +649,13 @@ class Checker:
         rec, issues = best["record"], list(id_problems)
         if best["author_share"] is not None and best["author_share"] < AUTHORS_MIN:
             issues.append(f"{len(best['missing_authors'])} of {len(e['authors'])} cited authors are not on the "
-                          f"record: {', '.join(best['missing_authors'])}")
+                          f"record: {'; '.join(best['missing_authors'])}")
             res.update(verdict="MISMATCH", issues=issues)
             return res
         if best["title_sim"] < TITLE_SAME:
             issues.append(f'title differs from the record: "{rec["title"]}"')
         if best["missing_authors"]:
-            issues.append(f"cited author(s) not on the record: {', '.join(best['missing_authors'])}")
+            issues.append(f"cited author(s) not on the record: {'; '.join(best['missing_authors'])}")
         if best["year_diff"] is not None and not YEAR_LAG[0] <= best["year_diff"] <= YEAR_LAG[1]:
             issues.append(f"cited year {e['year']}, record year {rec['year']}")
         if best["author_share"] is None and e["authors"]:
