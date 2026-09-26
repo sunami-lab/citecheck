@@ -84,6 +84,20 @@ class TextTests(unittest.TestCase):
         self.assertEqual(cc.family_name("Martin Luther King Jr."), "king")
         self.assertEqual(cc.split_names("{Barnes and Noble} and Doe, J."), ["{Barnes and Noble}", "Doe, J."])
 
+    def test_vancouver_names_and_organisations(self):
+        self.assertEqual([cc.family_name(n) for n in ("James G", "Hastie TJ", "Aidan N Gomez", "Pyatkov S.G.")],
+                         ["james", "hastie", "gomez", "pyatkov"])
+        self.assertTrue(all(cc.is_org(n) for n in ("OpenAI", "{Google DeepMind}", "The White House", "Google Research",
+                                                    "DeepSeek-AI", "Google", "NVIDIA")))
+        self.assertFalse(any(cc.is_org(n) for n in ("Vaswani, Ashish", "Ashish Vaswani", "House, Thomas", "A", "X",
+                                                     "Unknown", "Sahoo", "Anonymous")))
+        self.assertEqual(cc.split_names("Franz Aichberger, Lily Chen, and John Smith"),
+                         ["Franz Aichberger", "Lily Chen", "John Smith"])
+        self.assertEqual(cc.split_names("van der Maaten, Laurens and Smith, John A."),
+                         ["van der Maaten, Laurens", "Smith, John A."])
+        self.assertEqual(cc.author_overlap(["Guo, Daya", "Yang, Dejian"], ["DeepSeek-AI"]), (None, []))
+        self.assertEqual(cc.author_overlap(["{OpenCitations}"], ["Chiara Di Giambattista"]), (None, []))
+
     def test_author_overlap(self):
         record = ["Ashish Vaswani", "Noam Shazeer", "Aidan N.Gomez", "Łukasz Kaiser"]
         self.assertEqual(cc.author_overlap(["Vaswani, A.", "Gomez, Aidan", "Kaiser, Lukasz"], record), (1.0, []))
@@ -334,6 +348,63 @@ class VerdictTests(unittest.TestCase):
     def test_et_al_in_names(self):
         self.assertEqual(cc.split_names("A. Smith et al."), ["A. Smith"])
         self.assertEqual(cc.split_names("Smith, A. and et al."), ["Smith, A."])
+
+    def test_grey_literature_is_check(self):
+        r = self.run_check(entry(title="Introducing OpenAI o1", authors=["OpenAI"], year=2024))
+        self.assertEqual(r["verdict"], "CHECK")
+
+    def test_similar_title_by_other_authors_is_not_a_mismatch(self):
+        other = cc._record("DBLP", "Thinking Fast and Slow in AI", ["Grady Booch", "Francesco Fabiano"], 2021)
+        e = entry(title="Thinking, Fast and Slow", authors=["Kahneman, Daniel"], year=2011)
+        self.assertEqual(self.run_check(e, s2=[other])["verdict"], "NOT_FOUND")
+        self.assertEqual(self.run_check(dict(e, type="book"), s2=[other])["verdict"], "CHECK")  # books: unindexed
+
+    def test_book_with_same_title_review_is_not_a_mismatch(self):
+        review = cc._record("Crossref", "Fundamentals of qualitative research", ["Some Reviewer"], 2012)
+        e = entry(title="Fundamentals of qualitative research", authors=["Saldana, Johnny"], year=2011, type="book")
+        self.assertEqual(self.run_check(e, crossref=[review])["verdict"], "CHECK")
+
+    def test_incomplete_record_is_check_not_mismatch(self):
+        rec = cc._record("Crossref", "Markov chain models for threshold exceedances", ["Richard L. Smith"], 1997)
+        e = entry(title="Markov chain models for threshold exceedances", year=1997,
+                  authors=["Smith, Richard L", "Tawn, Jonathan A", "Coles, Stuart G"])
+        self.assertEqual(self.run_check(e, crossref=[rec])["verdict"], "CHECK")
+        self.assertFalse(cc.record_within(["Smith, J.", "Doe, A."], ["John Smith", "Mary Roe"]))
+
+    def test_href_titles(self):
+        f = {"key": "k", "type": "misc", "title": r"\href{https://doi.org/10.1038/s41467-020-16941-y}{Scientists' warning}"}
+        e = cc.to_entry(f)
+        self.assertEqual((e["title"], e["doi"]), ("Scientists' warning", "10.1038/s41467-020-16941-y"))
+
+    def test_dblp_needs_arxiv_to_decide_not_found(self):
+        with mock.patch.object(cc, "dblp_db", return_value=object()), \
+                mock.patch.object(cc, "dblp_search", return_value=[]), \
+                mock.patch.object(cc, "crossref_search", return_value=[]), \
+                mock.patch.object(cc, "arxiv_title", side_effect=cc.SourceError("arXiv HTTP 429")), \
+                mock.patch.object(cc, "s2_match", side_effect=cc.SourceError("Semantic Scholar HTTP 429")), \
+                mock.patch.object(cc, "openalex_search", side_effect=cc.SourceError("OpenAlex HTTP 429")):
+            r = cc.Checker(mock.Mock()).check(entry(title="Higgsino Above the Sea of Fog", authors=["Fan, JiJi"]))
+        self.assertEqual(r["verdict"], "ERROR")
+
+    def test_unchecked_own_identifier_is_error(self):
+        http = mock.Mock()
+        checker = cc.Checker(http)
+        checker.arxiv_failed = {"2502.14499"}
+        with mock.patch.object(cc, "dblp_db", return_value=None), \
+                mock.patch.object(cc, "s2_match", return_value=[]), \
+                mock.patch.object(cc, "openalex_search", return_value=[]), \
+                mock.patch.object(cc, "crossref_search", return_value=[]), \
+                mock.patch.object(cc, "arxiv_title", return_value=[]):
+            r = checker.check(entry(title="MLGym: A framework and benchmark", arxiv="2502.14499"))
+        self.assertEqual(r["verdict"], "ERROR")
+
+    def test_crossref_author_search_rescues_same_title_book(self):
+        wrong = cc._record("Crossref", "Modern cosmology", ["George Ellis", "Jean-Philippe Uzan"], 2024)
+        right = cc._record("Crossref", "Modern Cosmology", ["Scott Dodelson", "Fabian Schmidt"], 2020)
+        e = entry(title="Modern cosmology", authors=["Scott Dodelson", "Fabian Schmidt"], year=2020, type="book")
+        crossref = lambda title, author, year, anchored=False: [right] if anchored else [wrong]  # noqa: E731
+        r = self.run_check(e, crossref=crossref, openalex=cc.SourceError("OpenAlex HTTP 429"))
+        self.assertEqual(r["verdict"], "VERIFIED")
 
     def test_duplicates(self):
         r1 = {"key": "ho2020", "match": REAL}

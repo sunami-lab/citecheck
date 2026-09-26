@@ -44,7 +44,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 TITLE_SAME = 0.95  # title similarity at or above this: same title
 TITLE_NEAR = 0.85  # at or above this: same work, reworded or mistyped title
@@ -58,7 +58,8 @@ FLAGGED = ("NOT_FOUND", "MISMATCH")
 ORDER = ("NOT_FOUND", "MISMATCH", "ERROR", "CHECK", "SKIPPED", "VERIFIED")
 # Entry types the indexes cover poorly: when unfound they get CHECK, not NOT_FOUND.
 UNINDEXED_TYPES = {"phdthesis", "mastersthesis", "thesis", "techreport", "report", "manual", "software",
-                   "online", "www", "unpublished", "patent", "dataset", "standard"}
+                   "online", "www", "unpublished", "patent", "dataset", "standard",
+                   "book", "inbook", "mvbook", "incollection", "collection"}
 # ...and the same kinds of work exported as @article/@misc (Google Scholar: journal = {Tech. Rep.}).
 UNINDEXED_VENUE = re.compile(r"tech(nical)?\.?\s*rep|working paper|thesis|dissertation|lecture notes|white ?paper", re.I)
 BOOK_TYPES = {"book", "inbook", "mvbook"}  # reprints and new editions: years are not compared
@@ -79,7 +80,9 @@ _LETTER_CMD = {"ss": "ss", "o": "o", "O": "O", "l": "l", "L": "L", "ae": "ae", "
 
 def detex(s: str) -> str:
     """BibTeX/LaTeX field text -> plain text."""
-    s = _ACCENT.sub(r"\1", s or "")
+    s = re.sub(r"\\href\s*\{[^}]*\}\s*\{", "{", s or "")  # \href{url}{text} -> text
+    s = re.sub(r"\\url\s*\{[^}]*\}", " ", s)
+    s = _ACCENT.sub(r"\1", s)
     s = re.sub(r"\\(ss|oe|OE|ae|AE|aa|AA|o|O|l|L|i|j)(?![A-Za-z])", lambda m: _LETTER_CMD[m.group(1)], s)
     s = re.sub(r"\\([&%$#_])", r"\1", s)
     s = re.sub(r"\\[A-Za-z]+\*?", " ", s)  # drop remaining commands, keep their arguments
@@ -197,7 +200,15 @@ def split_names(field: str) -> list:
         buf.append(c)
         i += 1
     names.append("".join(buf))
-    names = [re.sub(r",?\s*\bet\.?\s+al\.?$", "", n.strip()) for n in names]  # "A. Smith et al."
+    split = []
+    for n in names:  # "Franz Aichberger, Lily Chen, and John Smith": full names separated by commas
+        pieces = [p.strip() for p in n.split(",")]
+        filled = [p for p in pieces if p]
+        if "{" not in n and len(filled) >= 2 and all(len(p.split()) >= 2 for p in filled):
+            split += filled
+        else:
+            split.append(n)
+    names = [re.sub(r",?\s*\bet\.?\s+al\.?$", "", n.strip()) for n in split]  # "A. Smith et al."
     return [n.strip() for n in names if n.strip() and norm(n) not in ("others", "et al")]
 
 
@@ -209,15 +220,47 @@ def family_name(raw: str) -> str:
     name = detex(raw)
     if "," in name:
         return norm(name.split(",")[0])
+    raw_words = name.split()
+    if len(raw_words) > 1 and all(re.fullmatch(r"(?:[A-Z]\.?-?){1,3}", w) for w in raw_words[1:]):
+        return norm(raw_words[0])  # "James G", "Hastie TJ": family name first, initials after
     words = norm(name).split()
     if len(words) > 1 and words[-1] in ("jr", "sr", "ii", "iii", "iv"):
         words.pop()
     return words[-1] if words else ""
 
 
+_ORG = re.compile(r"\b(ai|inc|llc|ltd|labs?|research|team|collaboration|consortium|council|institute|university|"
+                  r"department|foundation|agency|committee|association|society|organi[sz]ation|corporation|"
+                  r"company|ministry|government|white house|openai|anthropic|deepmind|google|microsoft|nvidia)\b", re.I)
+
+
+_KNOWN_ORGS = set("""google meta microsoft anthropic deepmind openai amazon apple ibm intel nvidia baidu alibaba tencent
+huawei samsung mistral cohere eleutherai deepseek qwen xai who unesco oecd nasa cern nih cdc fda epoch""".split())
+_PLACEHOLDERS = {"unknown", "anonymous", "anon", "author", "authors", "others", "et al", "na", "n a", "tba", "tbd"}
+
+
+def is_org(raw: str) -> bool:
+    """A corporate author: {Braced Name}, an organisation keyword, a known organisation, or one word with an
+    internal capital ("OpenAI", "DeepSeek-AI"). Bare surnames, initials and placeholders are not."""
+    raw = raw.strip()
+    name = detex(raw)
+    if norm(name) in _PLACEHOLDERS or len(norm(name)) < 3:
+        return False
+    if raw.startswith("{") and _close_of(raw, 0) == len(raw) - 1:
+        return True
+    if "," in name:
+        return False
+    if len(name.split()) == 1:
+        return norm(name) in _KNOWN_ORGS or bool(re.search(r"[a-z][A-Z]|^[A-Z]{3,}$|-AI$", name))
+    return bool(_ORG.search(name))
+
+
 def author_overlap(cited: list, record: list):
-    """Share of cited authors whose family name appears on the record, and the misses."""
+    """Share of cited authors whose family name appears on the record, and the misses. None when
+    the lists cannot be compared (no authors, or an organisation on one side and people on the other)."""
     if not cited or not record:
+        return None, []
+    if all(is_org(a) for a in cited) or (len(record) == 1 and is_org(record[0]) and len(cited) > 1):
         return None, []
     tokens = {t for name in record for t in norm(name).split()}
     missing = []
@@ -231,6 +274,15 @@ def author_overlap(cited: list, record: list):
             continue
         missing.append(detex(raw))
     return round(1 - len(missing) / len(cited), 3), missing
+
+
+def record_within(cited: list, record: list) -> bool:
+    """True when the record lists fewer authors than cited and every one of them is cited: an
+    incomplete index record rather than a wrong author list."""
+    if not cited or not record or len(record) >= len(cited):
+        return False
+    tokens = {t for raw in cited for t in norm(detex(raw)).split()}
+    return all(family_name(a).split()[-1:] and family_name(a).split()[-1] in tokens for a in record)
 
 
 def _year(v):
@@ -364,7 +416,7 @@ def find_arxiv(f: dict) -> str:
 
 
 def find_doi(f: dict) -> str:
-    for name in ("doi", "url", "note", "howpublished"):
+    for name in ("doi", "url", "note", "howpublished", "title"):
         m = _DOI.search(urllib.parse.unquote(f.get(name, "")))
         if m:
             doi = m.group(1).rstrip(".,;")
@@ -373,7 +425,7 @@ def find_doi(f: dict) -> str:
 
 
 def find_url(f: dict) -> str:
-    for name in ("url", "howpublished", "note"):
+    for name in ("url", "howpublished", "note", "title"):
         m = re.search(r"https?://[^\s{}\\]+", f.get(name, ""))
         if m:
             return m.group(0)
@@ -452,6 +504,65 @@ def cited_keys(paths: list) -> set:
                 if not _CROSSREF.match(key):
                     keys.add(key)
     return keys
+
+
+# Sentence boundaries: ". X" but not after "et al.", "e.g.", "Fig." or an initial ("J. Smith").
+_SENT_END = re.compile(r"[.!?](?=\s+[A-Z\\])")
+_NOT_END = re.compile(r"(?:\bet al|\be\.g|\bi\.e|\bcf|\bvs|\betc|\bFigs?|\bEqs?|\bSecs?|\bTab|\bRefs?|\bresp|"
+                      r"\bapprox|\bNo|\b[A-Z])$")
+_BLOCK = re.compile(r"\n\s*\n|\\(?:sub)*section\*?\{[^}]*\}|\\paragraph\*?\{[^}]*\}|\\(?:begin|end)\{[^}]*\}"
+                    r"|\\item\b|\\caption\{|^#+ .*$", re.M)
+
+
+def _sentence_around(text: str, pos: int) -> tuple:
+    """(start, end) of the sentence containing text[pos]."""
+    start = max([m.end() for m in _BLOCK.finditer(text, max(0, pos - 3000), pos)] or [max(0, pos - 3000)])
+    for m in _SENT_END.finditer(text, start, pos):
+        if not _NOT_END.search(text[max(0, m.start() - 8):m.start()]):
+            start = m.end()
+    end = min([m.start() for m in _BLOCK.finditer(text, pos, pos + 3000)] or [min(len(text), pos + 3000)])
+    for m in _SENT_END.finditer(text, pos, end):
+        if not _NOT_END.search(text[max(0, m.start() - 8):m.start()]):
+            end = m.end()
+            break
+    return start, end
+
+
+def citation_contexts(paths: list) -> dict:
+    """{key: [{"file", "line", "sentence"}]}: every sentence in the LaTeX/Markdown sources that cites
+    the key, with citations shown as [key, ...] and other markup removed."""
+    files = []
+    for p in paths:
+        files += _walk(p, SOURCE_EXTS) if os.path.isdir(p) else [p]
+    out = {}
+    for path in files:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        tex = path.lower().endswith(".tex")
+        if tex:
+            text = re.sub(r"(?<!\\)%.*", "", text)
+            cites = [(m.start(), m.end(), [k.strip() for k in m.group(1).split(",") if k.strip()])
+                     for m in _CITE.finditer(text) if not m.group(0).startswith("\\nocite")]
+        else:
+            text = re.sub(r"(?ms)^(```|~~~).*?^\1", "", text)
+            cites = [(m.start(), m.end(), [m.group(1).rstrip(".:;,?")]) for m in _PANDOC_CITE.finditer(text)
+                     if not _CROSSREF.match(m.group(1))]
+        for pos, _end, keys in cites:
+            start, end = _sentence_around(text, pos)
+            raw = text[start:end]
+            if tex:
+                raw = _CITE.sub(lambda m: " [" + ", ".join(k.strip() for k in m.group(1).split(",")) + "] ", raw)
+                raw = re.sub(r"\\(?:label|ref|eqref|autoref|cref|Cref)\{[^}]*\}", " ", raw)
+                sentence = detex(raw)
+            else:
+                sentence = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", raw)  # [text](url) -> text
+            sentence = re.sub(r"\s+([,.;:])", r"\1", re.sub(r"\s+", " ", sentence)).strip()[:700]
+            where = {"file": os.path.relpath(path, paths[0] if os.path.isdir(paths[0]) else os.path.dirname(path)),
+                     "line": text.count("\n", 0, pos) + 1, "sentence": sentence}
+            for key in keys:
+                if where not in out.setdefault(key, []):
+                    out[key].append(where)
+    return out
 
 
 class InputError(Exception):
@@ -554,10 +665,16 @@ class Http:
 # ---------------------------------------------------------------- sources
 # Each returns a list of records; an empty list is a definitive "no match".
 
-def _record(source, title, authors, year, venue="", doi="", arxiv="", url="", notices=()):
+def _record(source, title, authors, year, venue="", doi="", arxiv="", url="", notices=(), abstract=""):
     return {"source": source, "title": re.sub(r"\s+", " ", title or "").strip(),
             "authors": [a for a in authors if a], "year": _year(year), "venue": venue or "",
-            "doi": doi or "", "arxiv": arxiv or "", "url": url or "", "notices": sorted(set(notices))}
+            "doi": doi or "", "arxiv": arxiv or "", "url": url or "", "notices": sorted(set(notices)),
+            "abstract": _plain(abstract)}
+
+
+def _plain(text: str) -> str:
+    """Markup-free text (JATS/HTML tags, entities, whitespace)."""
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", text or ""))).strip()
 
 
 def _crossref_notices(item: dict) -> list:
@@ -589,9 +706,12 @@ def s2_match(http, title):
     return out
 
 
-def crossref_search(http, title, first_author, year):
-    query = " ".join(str(x) for x in (title, first_author, year) if x)
-    params = {"query.bibliographic": query, "rows": 5, "select": "DOI,title,author,issued,container-title,updated-by"}
+def crossref_search(http, title, first_author, year, anchored=False):
+    if anchored:  # restrict to works by this author, to get past same-title noise
+        params = {"query.title": title, "query.author": first_author}
+    else:
+        params = {"query.bibliographic": " ".join(str(x) for x in (title, first_author, year) if x)}
+    params.update({"rows": 5, "select": "DOI,title,author,issued,container-title,updated-by"})
     if MAILTO:
         params["mailto"] = MAILTO
     status, body = http.get("https://api.crossref.org/works?" + urllib.parse.urlencode(params))
@@ -646,7 +766,8 @@ def _arxiv_query(http, params):
             continue
         authors = [a.findtext(_ATOM + "name") for a in e.findall(_ATOM + "author")]
         out.append(_record("arXiv", title, authors, e.findtext(_ATOM + "published"), "arXiv",
-                           e.findtext("{http://arxiv.org/schemas/atom}doi"), aid, f"https://arxiv.org/abs/{aid}"))
+                           e.findtext("{http://arxiv.org/schemas/atom}doi"), aid, f"https://arxiv.org/abs/{aid}",
+                           abstract=e.findtext(_ATOM + "summary") or ""))
     return out
 
 
@@ -655,13 +776,16 @@ def arxiv_title(http, title):
 
 
 def arxiv_ids(http, ids):
-    """Batch lookup: {arxiv_id: record} for the IDs that exist."""
-    ids, found = sorted(set(ids)), {}
+    """Batch lookup: ({arxiv_id: record} for the IDs that exist, set of IDs that could not be checked)."""
+    ids, found, failed = sorted(set(ids)), {}, set()
     for i in range(0, len(ids), 50):
         chunk = ids[i:i + 50]
-        for r in _arxiv_query(http, {"id_list": ",".join(chunk), "max_results": len(chunk)}):
-            found[r["arxiv"]] = r
-    return found
+        try:
+            for r in _arxiv_query(http, {"id_list": ",".join(chunk), "max_results": len(chunk)}):
+                found[r["arxiv"]] = r
+        except SourceError:
+            failed.update(chunk)
+    return found, failed
 
 
 def doi_lookup(http, doi):
@@ -675,7 +799,21 @@ def doi_lookup(http, doi):
     authors = [a.get("literal") or f"{a.get('given', '')} {a.get('family', '')}".strip() for a in m.get("author", [])]
     year = ((m.get("issued") or {}).get("date-parts") or [[None]])[0][0]
     return _record("DOI", first(m.get("title")), authors, year, first(m.get("container-title")), doi,
-                   url=f"https://doi.org/{doi}", notices=_crossref_notices(m))
+                   url=f"https://doi.org/{doi}", notices=_crossref_notices(m), abstract=m.get("abstract") or "")
+
+
+def openalex_abstract(http, doi):
+    """Abstract of a DOI from OpenAlex's single-work endpoint (free of charge), '' if it has none."""
+    params = {"select": "abstract_inverted_index"}
+    if MAILTO:
+        params["mailto"] = MAILTO
+    status, body = http.get(f"https://api.openalex.org/works/doi:{urllib.parse.quote(doi, safe='/')}?"
+                            + urllib.parse.urlencode(params))
+    if status == 404:
+        return ""
+    index = _json(status, body, "OpenAlex").get("abstract_inverted_index") or {}
+    words = sorted((pos, word) for word, positions in index.items() for pos in positions)
+    return " ".join(word for _, word in words)
 
 
 # ---------------------------------------------------------------- local DBLP index (optional)
@@ -812,7 +950,7 @@ class Checker:
         self.http = http
         self.failures = Counter()
         self.disabled = set()
-        self.arxiv = {}
+        self.arxiv, self.arxiv_failed = {}, set()
 
     def _call(self, name, fn, *args):
         """Run a source query; three failures in a row switch that source off for the run."""
@@ -832,10 +970,7 @@ class Checker:
         ids = [e["arxiv"] for e in entries if e["arxiv"]]
         if not ids:
             return
-        try:
-            self.arxiv = self._call("arXiv", arxiv_ids, ids)
-        except SourceError:
-            self.arxiv = None
+        self.arxiv, self.arxiv_failed = self._call("arXiv", arxiv_ids, ids)
 
     def _searches(self, e):
         """Free and local sources first; rationed ones last, so they are only asked when needed."""
@@ -853,6 +988,7 @@ class Checker:
         ydiff = e["year"] - rec["year"] if e["year"] and rec["year"] and e["type"] not in BOOK_TYPES else None
         sim = round(title_sim(e["title"], rec["title"]), 3)
         return {"record": rec, "title_sim": sim, "author_share": share, "missing_authors": missing,
+                "record_within": record_within(e["authors"], rec["authors"]),
                 "year_diff": ydiff, "title_diff": title_changes(e["title"], rec["title"]) if sim >= TITLE_NEAR else []}
 
     @staticmethod
@@ -889,6 +1025,7 @@ class Checker:
             res.update(verdict="SKIPPED", issues=["entry has no title"])
             return res
         cands, id_problems, answered = [], [], []
+        res["id_unchecked"] = False
         if e["year"] and e["year"] > THIS_YEAR + 1:
             id_problems.append(f"cited year {e['year']} is in the future")
 
@@ -898,9 +1035,11 @@ class Checker:
                 self._check_id(e, f"DOI {e['doi']}", rec, cands, id_problems, res["notes"])
             except SourceError as err:
                 res["notes"].append(f"DOI not checked: {err}")
+                res["id_unchecked"] = True
         if e["arxiv"]:
-            if self.arxiv is None:
+            if e["arxiv"] in self.arxiv_failed:
                 res["notes"].append("arXiv ID not checked: arXiv unavailable")
+                res["id_unchecked"] = True
             else:
                 self._check_id(e, f"arXiv:{e['arxiv']}", self.arxiv.get(e["arxiv"]), cands, id_problems, res["notes"])
 
@@ -916,10 +1055,13 @@ class Checker:
                 if any(self._clean(c) for c in cands):
                     break
             first = family_name(e["authors"][0]).split() if e["authors"] else []
-            if first and not any(self._consistent(c) for c in cands):
-                try:  # title search found nothing by these authors: search within the first author's works
-                    recs = self._call("OpenAlex", openalex_search, e["title"], first[-1])
-                    cands += [self._score(e, r) for r in recs]
+            # title search found nothing by these authors: search within the first author's works
+            for name, fn, args in (("Crossref", crossref_search, (e["title"], first[-1] if first else "", None, True)),
+                                   ("OpenAlex", openalex_search, (e["title"], first[-1] if first else ""))):
+                if not first or any(self._consistent(c) for c in cands):
+                    break
+                try:
+                    cands += [self._score(e, r) for r in self._call(name, fn, *args)]
                 except SourceError as err:
                     res["notes"].append(str(err))
 
@@ -929,7 +1071,12 @@ class Checker:
                 answered.append("DBLP")
             except SourceError as err:
                 res["notes"].append(str(err))
-        near = [c for c in cands if c["title_sim"] >= TITLE_NEAR]
+        # a record with other authors is evidence only if its title is the cited title; a merely similar
+        # title by other people is a different work
+        # (for books, a same-title record by other people is usually a review or another book)
+        near = [c for c in cands if c["title_sim"] >= TITLE_NEAR and
+                (self._consistent(c) or (c["title_sim"] >= TITLE_SAME and not c["title_diff"]
+                                         and e["type"] not in UNINDEXED_TYPES))]
         if not near:
             return self._unfound(e, res, cands, id_problems, answered)
         best = max(near, key=lambda c: (self._consistent(c), not c.get("retitled"), c["title_sim"] >= TITLE_SAME,
@@ -937,7 +1084,10 @@ class Checker:
                                         -abs(c["year_diff"] or 0), c["title_sim"]))
         res["match"] = {**best["record"], "title_sim": best["title_sim"], "author_share": best["author_share"]}
         rec, issues = best["record"], list(id_problems)
-        if not self._consistent(best):
+        if not self._consistent(best) and best["record_within"]:  # the record is incomplete
+            issues.append(f"cited author(s) not on the record: {'; '.join(best['missing_authors'])} "
+                          f"(the record lists only {len(rec['authors'])} author(s))")
+        elif not self._consistent(best):
             issues.append(f"{len(best['missing_authors'])} of {len(e['authors'])} cited authors are not on the "
                           f"record: {'; '.join(best['missing_authors'])}")
             res.update(verdict="MISMATCH", issues=issues)
@@ -1010,10 +1160,19 @@ class Checker:
                 res["verdict"] = "CHECK"
                 return res
             res["issues"].append(f"URL is dead ({'unreachable' if code == 0 else f'HTTP {code}'})")
-        broad = {"Semantic Scholar", "OpenAlex", "DBLP"} & set(answered)
+        # a broad index must have answered; DBLP covers computer science only, so it counts with arXiv
+        broad = {"Semantic Scholar", "OpenAlex"} & set(answered) or {"DBLP", "arXiv"} <= set(answered)
         if len(answered) >= 2 and broad:
             res["issues"].insert(0, f"no work with this title in {', '.join(answered)}")
-            if (e["type"] in UNINDEXED_TYPES or UNINDEXED_VENUE.search(e["venue_text"])) and not id_problems:
+            grey = e["authors"] and all(is_org(a) for a in e["authors"])
+            if res.get("id_unchecked") and not id_problems:
+                res["issues"].append("the entry's own DOI or arXiv ID could not be checked (source unavailable)")
+                res["verdict"] = "ERROR"
+            elif grey and not id_problems:
+                res["issues"].append("organisation-authored documents (reports, model cards, blog posts) are rarely "
+                                     "indexed: confirm it exists, and add a url so the next run can check it")
+                res["verdict"] = "CHECK"
+            elif (e["type"] in UNINDEXED_TYPES or UNINDEXED_VENUE.search(e["venue_text"])) and not id_problems:
                 res["issues"].append(f"@{e['type']} entries are often not indexed: confirm it exists, "
                                      f"and add a url or doi so the next run can check it")
                 res["verdict"] = "CHECK"
@@ -1098,6 +1257,43 @@ def render(results, source, extra_lines):
     return "\n".join(lines)
 
 
+def claims_payload(checker, results, contexts: dict) -> list:
+    """For each checked reference: the sentences that cite it and the cited work's abstract, for a
+    reader (Claude, in the claims skill) to judge whether the work supports what is attributed to it."""
+    matched = [r["match"] for r in results if r["match"]]
+    for m in matched:  # conference records often carry no identifier: borrow the arXiv twin's from DBLP
+        if not (m["arxiv"] or m["doi"] or m.get("abstract")) and dblp_db():
+            try:
+                twin = [t for t in dblp_search(None, m["title"]) if t["arxiv"] and title_sim(m["title"], t["title"]) >= TITLE_SAME]
+            except SourceError:
+                twin = []
+            m["arxiv"] = twin[0]["arxiv"] if twin else ""
+    missing = [m["arxiv"] for m in matched if m["arxiv"] and not m.get("abstract")]
+    if missing:
+        try:
+            found, _ = arxiv_ids(checker.http, missing)
+        except SourceError:
+            found = {}
+        for m in matched:
+            if not m.get("abstract") and m["arxiv"] in found:
+                m["abstract"], m["abstract_source"] = found[m["arxiv"]]["abstract"], "arXiv"
+    for m in matched:
+        if not m.get("abstract") and m["doi"]:
+            try:
+                m["abstract"], m["abstract_source"] = openalex_abstract(checker.http, m["doi"]), "OpenAlex"
+            except SourceError:
+                pass
+    out = []
+    for r in results:
+        m = r["match"] or {}
+        out.append({"key": r["key"], "verdict": r["verdict"], "cited_title": r["cited"]["title"],
+                    "work": {k: m.get(k) for k in ("title", "year", "venue", "url")} if m else None,
+                    "work_authors": (m.get("authors") or [])[:6],
+                    "abstract": m.get("abstract", ""), "abstract_source": m.get("abstract_source") or m.get("source", ""),
+                    "contexts": contexts.get(r["key"], [])})
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="citecheck", description=__doc__.split("\n\n")[0])
     ap.add_argument("inputs", nargs="*", metavar="PATH",
@@ -1107,6 +1303,9 @@ def main(argv=None):
                          "(the default for a directory or .zip input)")
     ap.add_argument("--all", action="store_true", help="check every entry, cited or not")
     ap.add_argument("--json", metavar="OUT", help="also write per-entry results to this JSON file")
+    ap.add_argument("--claims", metavar="OUT.json",
+                    help="also write, for each reference, the sentences that cite it and the cited work's abstract "
+                         "(input for the claims skill)")
     ap.add_argument("--fixes", metavar="OUT.bib",
                     help="write corrected entries for MISMATCH/CHECK references that matched a real record "
                          "(your bibliography is never modified)")
@@ -1139,6 +1338,7 @@ def main(argv=None):
                 seen.update(e["key"] for e in loaded)
             sources = args.cited_in or roots
             cited = cited_keys(sources) if sources and not args.all else {"*"}
+            contexts = citation_contexts(sources) if args.claims and sources else {}  # before a .zip's folder goes
         except (InputError, OSError, ValueError, zipfile.BadZipFile) as err:
             print(f"citecheck: {err}", file=sys.stderr)
             return 2
@@ -1177,6 +1377,17 @@ def main(argv=None):
                      "% a MISMATCH may mean you meant a different paper, not that these authors are right.\n\n")
             fh.write("\n".join(suggested_bibtex(r) for r in fixable))
         print(f"\n{len(fixable)} suggested corrections written to {args.fixes}")
+    if args.claims:
+        payload = claims_payload(checker, results, contexts)
+        with open(args.claims, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=1, ensure_ascii=False)
+        n_ctx = sum(len(p["contexts"]) for p in payload)
+        n_abs = sum(1 for p in payload if p["abstract"])
+        print(f"\nclaims: {n_ctx} citing sentences for {len(payload)} references, {n_abs} with an abstract, "
+              f"written to {args.claims}")
+    for r in results:  # abstracts are for --claims only; keep the report small
+        if r["match"]:
+            r["match"] = {k: v for k, v in r["match"].items() if k not in ("abstract", "abstract_source")}
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:
             json.dump({"version": __version__, "inputs": args.inputs, "duplicates": duplicates(results),
