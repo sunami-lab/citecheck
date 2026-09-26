@@ -1,0 +1,196 @@
+% Live test fixture: real references in the styles people paste (Google Scholar, DBLP,
+% publisher), plus planted errors of the kinds LLMs produce. `x-expect` lists the
+% verdicts that count as correct for each entry; tests/test_live.py checks them.
+
+% ---- real references --------------------------------------------------------------
+
+@inproceedings{he2016deep,
+  title={Deep residual learning for image recognition},
+  author={He, Kaiming and Zhang, Xiangyu and Ren, Shaoqing and Sun, Jian},
+  booktitle={Proceedings of the IEEE conference on computer vision and pattern recognition},
+  pages={770--778},
+  year={2016},
+  x-expect={VERIFIED}
+}
+
+@article{DBLP:journals/corr/abs-1810-04805,
+  author    = {Jacob Devlin and Ming{-}Wei Chang and Kenton Lee and Kristina Toutanova},
+  title     = {{BERT:} Pre-training of Deep Bidirectional Transformers for Language Understanding},
+  journal   = {CoRR},
+  volume    = {abs/1810.04805},
+  year      = {2018},
+  x-expect  = {VERIFIED}
+}
+
+@inproceedings{kingma2015adam,
+  title={Adam: A Method for Stochastic Optimization},
+  author={Kingma, Diederik P. and Ba, Jimmy},
+  booktitle={International Conference on Learning Representations},
+  year={2015},
+  x-expect={VERIFIED}
+}
+
+@article{mnih2015human,
+  title={Human-level control through deep reinforcement learning},
+  author={Mnih, Volodymyr and Kavukcuoglu, Koray and Silver, David and others},
+  journal={Nature},
+  volume={518},
+  number={7540},
+  pages={529--533},
+  year={2015},
+  doi={10.1038/nature14236},
+  x-expect={VERIFIED}
+}
+
+@inproceedings{ho2020denoising,
+  title={Denoising Diffusion Probabilistic Models},
+  author={Ho, Jonathan and Jain, Ajay and Abbeel, Pieter},
+  booktitle={Advances in Neural Information Processing Systems},
+  year={2020},
+  eprint={2006.11239},
+  archivePrefix={arXiv},
+  x-expect={VERIFIED}
+}
+
+@article{schulman2017proximal,
+  title={Proximal policy optimization algorithms},
+  author={Schulman, John and Wolski, Filip and Dhariwal, Prafulla and Radford, Alec and Klimov, Oleg},
+  journal={arXiv preprint arXiv:1707.06347},
+  year={2017},
+  x-expect={VERIFIED}
+}
+
+@inproceedings{loshchilov2019decoupled,
+  title={Decoupled Weight Decay Regularization},
+  author={Loshchilov, Ilya and Hutter, Frank},
+  booktitle={International Conference on Learning Representations},
+  year={2019},
+  x-expect={VERIFIED}
+}
+
+@article{vaswani2017attention,
+  title={Attention is all you need},
+  author={Vaswani, Ashish and Shazeer, Noam and Parmar, Niki and Uszkoreit, Jakob and Jones, Llion and Gomez, Aidan N and Kaiser, {\L}ukasz and Polosukhin, Illia},
+  journal={Advances in neural information processing systems},
+  volume={30},
+  year={2017},
+  x-expect={VERIFIED}
+}
+
+@article{radford2019language,
+  title={Language Models are Unsupervised Multitask Learners},
+  author={Radford, Alec and Wu, Jeffrey and Child, Rewon and Luan, David and Amodei, Dario and Sutskever, Ilya},
+  journal={OpenAI blog},
+  year={2019},
+  x-expect={VERIFIED, CHECK}
+}
+
+@article{jumper2021highly,
+  title={Highly accurate protein structure prediction with {AlphaFold}},
+  author={Jumper, John and Evans, Richard and Pritzel, Alexander and others},
+  journal={Nature},
+  volume={596},
+  pages={583--589},
+  year={2021},
+  doi={10.1038/s41586-021-03819-2},
+  x-expect={VERIFIED}
+}
+
+@misc{karpathy2022nanogpt,
+  title={{nanoGPT}},
+  author={Karpathy, Andrej},
+  year={2022},
+  howpublished={\url{https://github.com/karpathy/nanoGPT}},
+  x-expect={VERIFIED, CHECK}
+}
+
+% ---- planted errors -------------------------------------------------------------------
+
+% Fabricated titles with plausible venues. The authors are fictional names.
+@inproceedings{zhang2023sparse,
+  title={Sparse Mixture-of-Experts Routing via Optimal Transport for Long-Context Language Modeling},
+  author={Zhang, Wei and Moreau, Clara},
+  booktitle={Advances in Neural Information Processing Systems},
+  year={2023},
+  x-expect={NOT_FOUND}
+}
+
+@inproceedings{kim2024contrastive,
+  title={Contrastive Retrieval Pretraining Improves Causal Reasoning in Small Language Models},
+  author={Kim, Minseo and Okafor, Daniel},
+  booktitle={International Conference on Learning Representations},
+  year={2024},
+  x-expect={NOT_FOUND}
+}
+
+@article{kaplan2023scaling,
+  title={Scaling Laws for Multimodal Reward Models},
+  author={Halvorsen, Erik and Lindqvist, Maja},
+  journal={arXiv preprint},
+  year={2023},
+  x-expect={NOT_FOUND}
+}
+
+% Chimeric: a real title with another paper's authors.
+@inproceedings{simonyan2016deep,
+  title={Deep Residual Learning for Image Recognition},
+  author={Simonyan, Karen and Zisserman, Andrew},
+  booktitle={CVPR},
+  year={2016},
+  x-expect={MISMATCH}
+}
+
+@article{mnih2017proximal,
+  title={Proximal Policy Optimization Algorithms},
+  author={Mnih, Volodymyr and Silver, David},
+  journal={arXiv preprint},
+  year={2017},
+  x-expect={MISMATCH}
+}
+
+% Identifiers that do not exist or point elsewhere.
+@inproceedings{ho2020ddpm_badid,
+  title={Denoising Diffusion Probabilistic Models},
+  author={Ho, Jonathan and Jain, Ajay and Abbeel, Pieter},
+  booktitle={NeurIPS},
+  year={2020},
+  eprint={2006.99999},
+  archivePrefix={arXiv},
+  x-expect={MISMATCH}
+}
+
+@inproceedings{vaswani2017_wrongid,
+  title={Attention Is All You Need},
+  author={Vaswani, Ashish and Shazeer, Noam and Parmar, Niki},
+  booktitle={NeurIPS},
+  year={2017},
+  eprint={1810.04805},
+  archivePrefix={arXiv},
+  x-expect={MISMATCH}
+}
+
+@article{jumper2021_baddoi,
+  title={Highly accurate protein structure prediction with {AlphaFold}},
+  author={Jumper, John and Evans, Richard and Pritzel, Alexander},
+  journal={Nature},
+  year={2021},
+  doi={10.1038/s41586-021-99999-9},
+  x-expect={MISMATCH}
+}
+
+% Near misses: a garbled title and a wrong year.
+@inproceedings{brown2020reasoners,
+  title={Language Models are Few-Shot Reasoners},
+  author={Brown, Tom B. and Mann, Benjamin and Ryder, Nick},
+  booktitle={Advances in Neural Information Processing Systems},
+  year={2020},
+  x-expect={CHECK, MISMATCH}
+}
+
+@article{kingma2011adam,
+  title={Adam: A Method for Stochastic Optimization},
+  author={Kingma, Diederik P. and Ba, Jimmy},
+  journal={arXiv preprint arXiv:1412.6980},
+  year={2011},
+  x-expect={CHECK}
+}

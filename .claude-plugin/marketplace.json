@@ -1,0 +1,17 @@
+{
+  "name": "citecheck",
+  "owner": {
+    "name": "Chen-Yang Su",
+    "url": "https://github.com/chenyangsu"
+  },
+  "description": "citecheck: verify a paper's references against scholarly indexes before submission.",
+  "plugins": [
+    {
+      "name": "citecheck",
+      "source": "./",
+      "description": "Catch hallucinated references before you submit: flags citations that do not exist or whose authors, DOI, arXiv ID or year are wrong.",
+      "category": "research",
+      "tags": ["citations", "bibtex", "latex", "academic-writing"]
+    }
+  ]
+}
