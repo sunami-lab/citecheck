@@ -13,7 +13,7 @@
   <a href="#does-it-work"><img src="https://img.shields.io/badge/HALLMARK_F1-0.967-3ecf8e?style=flat-square" alt="HALLMARK test F1 0.967"></a>
 </p>
 
-citecheck looks up every reference your paper cites in DBLP, Crossref, arXiv, Semantic Scholar and OpenAlex. It tells you which ones **don't exist**, and which have the **wrong authors, DOI, arXiv ID, year or venue**. It also flags retracted papers and the same paper cited under two keys. It ships as a Claude Code plugin and as a single Python file with no dependencies.
+citecheck looks up every reference your paper cites in DBLP, Crossref, arXiv, Semantic Scholar and OpenAlex. It tells you which ones **don't exist**, and which have the **wrong authors, DOI, arXiv ID, year or venue**. It also flags retracted papers and the same paper cited under two keys. A second check tests whether each cited paper supports the sentence that cites it. citecheck ships as a Claude Code plugin and as a single Python file with no dependencies.
 
 ```console
 $ python3 scripts/citecheck.py examples/
@@ -22,15 +22,13 @@ $ python3 scripts/citecheck.py examples/
 [3/5] NOT_FOUND zhang2024retrieval
 [4/5] MISMATCH  song2020denoising
 [5/5] CHECK     kingma2011adam
-citecheck 0.2.0: 5 references in examples/
+citecheck 0.3.0: 5 references in examples/
   NOT_FOUND 1   MISMATCH 1   CHECK 1   VERIFIED 2
   checking the 5 entries cited in the sources (--all checks every entry)
   warning: the same work is cited under several keys: ho2020denoising, song2020denoising
-  note: stopped asking OpenAlex after repeated failures (rate limit, quota or outage)
-  hint: OpenAlex allows about 100 searches a day without a key; a free key (OPENALEX_API_KEY) allows 1,000
 
 NOT_FOUND  zhang2024retrieval  "Retrieval-Augmented Diffusion Transformers for Long-Horizon Planning"
-           - no work with this title in DBLP, Crossref, arXiv, Semantic Scholar
+           - no work with this title in DBLP, Crossref, arXiv, Semantic Scholar, OpenAlex
            note: closest title: "Refining Compositional Diffusion for Reliable Long-Horizon Planning" (DBLP, similarity 0.637)
 
 MISMATCH   song2020denoising  "Denoising Diffusion Probabilistic Models"
@@ -81,6 +79,20 @@ Claude runs citecheck, searches the web for anything the indexes can't place, an
 
 It doesn't edit anything until you say so. It also won't swap a fabricated reference for some other real paper, because the sentence citing it may not hold for the substitute.
 
+## Claims check
+
+A reference can exist and still be the wrong one for its sentence. `/citecheck:claims` pairs every citing sentence with the cited paper's abstract. Claude then labels each pair against a [written rubric](skills/claims/rubric.md) as supported, plausible, unsupported, contradicted, or unchecked. Before reporting an unsupported or contradicted pair, it opens the paper's full text.
+
+The script collects the pairs:
+
+```console
+$ python3 scripts/citecheck.py examples/ --claims claims.json
+...
+claims: 5 citing sentences for 5 references, 4 with an abstract, written to claims.json
+```
+
+Abstracts come from arXiv, the DOI record and OpenAlex's free DOI lookup. For conference records without an identifier, citecheck uses the arXiv version found in dblp.
+
 ## Install
 
 ### Claude Code plugin
@@ -90,14 +102,14 @@ It doesn't edit anything until you say so. It also won't swap a fabricated refer
 /plugin install citecheck@citecheck
 ```
 
-Then ask "check my references", or run `/citecheck:verify` with a paper folder, a `.bib` file or an Overleaf `.zip`.
+Then ask "check my references", or run `/citecheck:verify` with a paper folder, a `.bib` file or an Overleaf `.zip`. Ask "do my citations support my claims?", or run `/citecheck:claims`, for the claims check.
 
 For PDF, Word or pasted reference lists, Claude first extracts the references and then checks them. That also works for reviewers checking a submission. The skill also has Claude check any reference it writes itself.
 
 ### Standalone script
 
 ```bash
-git clone git@github.com:sunami-lab/citecheck.git
+git clone https://github.com/sunami-lab/citecheck.git
 python3 citecheck/scripts/citecheck.py path/to/paper/
 ```
 
@@ -118,10 +130,10 @@ Without these steps citecheck still works through Crossref, arXiv and doi.org. I
 | | Verdict | Meaning |
 | --- | --- | --- |
 | ✓ | **VERIFIED** | title, authors, year and venue agree with an indexed record |
-| ! | **CHECK** | the paper exists but something differs: a title word, the year, an author, a truncated author list, the venue, or a preprint cited as published. Also used for retracted papers, and for work that isn't indexed but has a live URL, or is a thesis or report |
+| ! | **CHECK** | the paper exists but something differs: a title word, the year, an author, a truncated author list, the venue, or a preprint cited as published. Also used for retracted papers. Also used for work the indexes rarely hold, if it has a live URL or is a book, thesis, report or organisation's document (a model card, a blog post) |
 | ✗ | **MISMATCH** | the title exists but most cited authors aren't on it, the DOI or arXiv ID points to a different paper or to nothing, or the year is in the future |
 | ✗ | **NOT_FOUND** | no index has a paper with this title |
-| ? | **ERROR** | too few sources answered to decide |
+| ? | **ERROR** | too few sources answered to decide, or the entry's own DOI or arXiv ID could not be looked up |
 
 MISMATCH and NOT_FOUND are the errors that get papers desk-rejected. CHECK items are worth fixing before camera-ready.
 
@@ -134,12 +146,12 @@ MISMATCH and NOT_FOUND are the errors that get papers desk-rejected. CHECK items
    - An identifier that points to nothing is a MISMATCH.
    - So is one that points to an unrelated paper.
    - If it points to a paper with the same authors and a related title, citecheck treats it as a preprint or retitled version.
-3. **Search by title, cheapest source first.** The order is the local DBLP index, Crossref, arXiv, Semantic Scholar, then OpenAlex, and it stops at the first record that agrees on everything. If no record lists the cited authors, it searches again among the first author's papers, which gets past same-title noise.
+3. **Search by title, cheapest source first.** The order is the local DBLP index, Crossref, arXiv, Semantic Scholar, then OpenAlex, and it stops at the first record that agrees on everything. If no record lists the cited authors, it searches again among the first author's papers (Crossref, then OpenAlex), which gets past same-title noise.
 4. **Compare field by field.**
    - **Title:** compared word by word. Added or dropped stopwords, hyphenation, plurals and British/American spelling don't count; a swapped word does.
-   - **Authors:** compared by family name.
+   - **Authors:** compared by family name. An organisation author ("OpenAI") is not compared with a list of people. A record that lists only some of the cited authors counts as incomplete, not wrong.
    - **Year:** the cited year may be one year earlier or up to two years later than the record's, since preprints get published later.
-   - **Venue:** about 30 major computer-science and machine-learning venues are recognised by name and abbreviation.
+   - **Venue:** 25 major computer-science and machine-learning venues are recognised by name and abbreviation.
 
 ## Options
 
@@ -150,6 +162,7 @@ MISMATCH and NOT_FOUND are the errors that get papers desk-rejected. CHECK items
 | `--all` | check every entry, cited or not |
 | `--fixes OUT.bib` | write corrected entries, built from the matched records, for MISMATCH and CHECK references. Your bibliography is never modified |
 | `--json OUT` | write per-entry results, including the matched record |
+| `--claims OUT.json` | write, for each reference, the sentences that cite it (with file and line) and the cited paper's abstract, for the claims check |
 | `--build-dblp` | build the local DBLP index, then exit |
 | `--no-cache` | bypass the 7-day lookup cache in `~/.cache/citecheck/` |
 | `S2_API_KEY`, `OPENALEX_API_KEY` | free API keys (see [setup](#one-time-setup-recommended)) |
@@ -166,38 +179,61 @@ Tested on 26 September 2026. The setup was the local DBLP index with no API keys
 | | Detection | False-positive rate | F1 |
 | --- | --- | --- | --- |
 | citecheck: MISMATCH, NOT_FOUND or CHECK counts as a detection | 0.950 | 0.026 | **0.967** |
-| citecheck: only MISMATCH or NOT_FOUND counts | 0.570 | 0.006 | 0.725 |
+| citecheck: only MISMATCH or NOT_FOUND counts | 0.566 | 0.006 | 0.721 |
 | bibtex-updater (the benchmark's reference tool) | 0.877 | 0.115 | – |
 | Claude Sonnet 4.6 + bibtex-updater (best agent in the paper, dev split) | 0.990 | 0.431 | 0.841 |
 
-The dev split, which the rules were tuned on, gives 0.962 detection, 0.027 false positives and F1 0.969.
+The dev split, which the rules were tuned on, gives 0.962 detection, 0.027 false positives and F1 0.969 (strict: 0.578, 0.010, 0.728).
 
 Twelve of the 14 error types are caught at 85% or better, and ten of them at 100%. The weakest are made-up venue names (76%) and preprints cited under the wrong version (84%). I built the rules on the dev split, but I did look at about 15 test-split misses from an earlier version, so read the test figure as slightly optimistic.
 
-Most of citecheck's "false positives" are errors in the benchmark's own valid entries. Of the 8 valid entries it flagged on the test split, 6 are wrong:
+Most of citecheck's "false positives" are errors in the benchmark's own valid entries. Of the 8 valid entries it flagged on the test split, 7 contradict the index records:
 
 - 2 have DOIs that resolve to other papers.
-- 3 have the wrong venue: LLaMA was never at ICLR, LLaMA 2 was not at NeurIPS, and MiniGPT-4 appeared at ICLR 2024, not CVPR.
-- 1 lists co-authors who aren't on the paper.
+- 3 name a venue where no version of the paper appears in dblp. LLaMA was never at ICLR, MiniGPT-4 appeared at ICLR 2024 rather than CVPR, and dblp has only the arXiv version of the third.
+- 1 cites LLaMA 2 at NeurIPS, with 8 names that aren't among the paper's 68 authors.
+- 1 lists 6 of a paper's 8 authors without "and others".
+
+The eighth is a genuine false alarm: dblp lacks the ICML version of that paper.
 
 **Real-world hallucinations.**
 
-- **GPTZero's list from accepted NeurIPS 2025 papers:** all 97 hallucinated references are flagged, 90 of them as MISMATCH or NOT_FOUND.
+- **GPTZero's list from accepted NeurIPS 2025 papers:** all 97 hallucinated references are flagged, 94 of them as MISMATCH or NOT_FOUND.
 - **One of those papers** (not named here). Run on its `.bib`, citecheck flags 24 of the 65 cited references as NOT_FOUND or MISMATCH:
   - That includes all 13 that GPTZero reported, plus 11 more.
-  - The authors deleted or corrected 22 of the 24 in their own v2.
+  - The authors deleted or corrected 22 of the 24 in their revised version.
   - The other 2 still list co-authors who aren't on the paper.
-  - Its CHECK items also caught a misspelled author ("Pennin" for Pennington), a title missing a word, and CoQA cited at NAACL, although it was published in TACL.
+  - Its CHECK items also caught a misspelled author name, a title missing a word, and a dataset paper cited at the wrong venue.
+- **724 documented real-world citations,** drawn from GPTZero's ICLR 2026 and NeurIPS 2025 reports, an ACL-venue scan, a published checker comparison and press reports:
+  - 545 are hallucinated. citecheck flags 88.1% of them as MISMATCH or NOT_FOUND, and 97.8% including CHECK.
+  - 179 are real references that some other checker wrongly flagged. citecheck flags 12 of these hard cases (6.7%) as MISMATCH or NOT_FOUND.
 
-Run the offline tests with `python3 -m unittest discover tests`. The benchmark harness is [`bench/hallmark.py`](bench/hallmark.py).
+**Recent papers across fields.** This test used 23 arXiv papers from 12 fields, submitted on 25 and 26 September 2026, with 1,053 cited references. citecheck verified 86.4% of the references and flagged 9 (0.9%) as NOT_FOUND or MISMATCH:
+
+- **4 are errors in those published bibliographies:**
+  - two DOIs that resolve to other articles
+  - a DOI with text glued on
+  - an author list naming five people who aren't among the cited preprint's three authors
+- **4 are real works no index covers:** a 1958 French paper, a 1962 translation, a 2013 university report and a 2024 article in a small journal.
+- **1 couldn't be found anywhere,** not even by a web search.
+
+**Claims check.** The benchmark takes 208 citing sentences from 26 papers. Each sentence is paired once with the abstract it cites and once with the abstract of another reference from the same bibliography. Claude Sonnet, using the rubric:
+
+- flagged none of the 208 original citations as unsupported
+- flagged 82.2% of the swapped ones
+
+Swaps that got through usually made a claim that the substitute paper also supports.
+
+Run the offline tests with `python3 -m unittest discover tests`. The benchmark harnesses are [`bench/hallmark.py`](bench/hallmark.py) and [`bench/claims.py`](bench/claims.py).
 
 ## Limitations
 
 - **Only scholarly indexes.** Court rulings, standards, many books and web pages come back NOT_FOUND unless the entry has a URL (then CHECK). The Claude Code skill confirms these with a web search; the standalone script cannot.
 - **Venues are checked only for about 30 major computer-science and machine-learning venues.** Journals and smaller conferences are not compared.
-- **Authors are compared by family name.** A wrong given name, or a changed author order, passes.
+- **Authors are compared by family name.** A wrong given name, or a changed author order, passes. A fabricated list full of common family names (Wang, Li, Zhang) can share enough of them with the real authors to get only CHECK.
 - **New papers can lag.** A paper accepted this year may not be in the indexes yet, so a correct citation can get CHECK ("only a preprint version was found").
 - **Indexes make mistakes.** Semantic Scholar's GPT-1 record lists two of its four authors, so a correct citation of it gets CHECK.
+- **The claims check sees abstracts.** A claim made only deep in a paper's full text can be labelled plausible or unsupported. The skill opens the full text before it reports a flag, and a flag is a prompt to reread the paper, not a verdict.
 
 ## Why not just a database of every reference?
 

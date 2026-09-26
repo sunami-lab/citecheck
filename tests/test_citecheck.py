@@ -364,6 +364,16 @@ class VerdictTests(unittest.TestCase):
         e = entry(title="Fundamentals of qualitative research", authors=["Saldana, Johnny"], year=2011, type="book")
         self.assertEqual(self.run_check(e, crossref=[review])["verdict"], "CHECK")
 
+    def test_short_title_by_other_authors_is_not_wrong_authors(self):
+        other = cc._record("Crossref", "LangChain", ["Someone Else"], 2023)
+        e = entry(type="misc", title="LangChain", authors=["Chase, Harrison"], year=2022,
+                  url="https://github.com/langchain-ai/langchain")
+        r = self.run_check(e, crossref=[other], url_status=200)
+        self.assertEqual(r["verdict"], "CHECK")
+        r = self.run_check(dict(e, url=""), crossref=[other])
+        self.assertEqual(r["verdict"], "NOT_FOUND")
+        self.assertIn("only works by other authors", r["issues"][0])
+
     def test_incomplete_record_is_check_not_mismatch(self):
         rec = cc._record("Crossref", "Markov chain models for threshold exceedances", ["Richard L. Smith"], 1997)
         e = entry(title="Markov chain models for threshold exceedances", year=1997,

@@ -1073,10 +1073,12 @@ class Checker:
                 res["notes"].append(str(err))
         # a record with other authors is evidence only if its title is the cited title; a merely similar
         # title by other people is a different work
-        # (for books, a same-title record by other people is usually a review or another book)
+        # (for books, a same-title record by other people is usually a review or another book, and a
+        # short title such as "LangChain" or "Deep learning" is shared by many unrelated works)
+        distinctive = len(set(norm(e["title"]).split()) - _STOP) >= 3
         near = [c for c in cands if c["title_sim"] >= TITLE_NEAR and
                 (self._consistent(c) or (c["title_sim"] >= TITLE_SAME and not c["title_diff"]
-                                         and e["type"] not in UNINDEXED_TYPES))]
+                                         and e["type"] not in UNINDEXED_TYPES and distinctive))]
         if not near:
             return self._unfound(e, res, cands, id_problems, answered)
         best = max(near, key=lambda c: (self._consistent(c), not c.get("retitled"), c["title_sim"] >= TITLE_SAME,
@@ -1163,7 +1165,9 @@ class Checker:
         # a broad index must have answered; DBLP covers computer science only, so it counts with arXiv
         broad = {"Semantic Scholar", "OpenAlex"} & set(answered) or {"DBLP", "arXiv"} <= set(answered)
         if len(answered) >= 2 and broad:
-            res["issues"].insert(0, f"no work with this title in {', '.join(answered)}")
+            same_title = any(c["title_sim"] >= TITLE_SAME and not c["title_diff"] for c in cands)
+            res["issues"].insert(0, f"only works by other authors have this title in {', '.join(answered)}"
+                                 if same_title else f"no work with this title in {', '.join(answered)}")
             grey = e["authors"] and all(is_org(a) for a in e["authors"])
             if res.get("id_unchecked") and not id_problems:
                 res["issues"].append("the entry's own DOI or arXiv ID could not be checked (source unavailable)")
