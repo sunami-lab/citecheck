@@ -44,7 +44,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 TITLE_SAME = 0.95  # title similarity at or above this: same title
 TITLE_NEAR = 0.85  # at or above this: same work, reworded or mistyped title
@@ -95,7 +95,7 @@ def detex(s: str) -> str:
 
 def norm(s: str) -> str:
     """Lowercase ASCII words for comparison: no accents, markup or punctuation."""
-    s = html.unescape(re.sub(r"<[^>]+>", " ", s or ""))  # Crossref titles carry <i>, <sub>...
+    s = html.unescape(html.unescape(re.sub(r"<[^>]+>", " ", s or "")))  # <i>, <sub>..., and "&amp;apos;"
     s = unicodedata.normalize("NFKD", detex(s).translate(_TRANSLIT))
     s = "".join(c for c in s if not unicodedata.combining(c)).lower()
     return re.sub(r"[^a-z0-9]+", " ", s).strip()
@@ -219,7 +219,7 @@ def family_name(raw: str) -> str:
     raw = raw.strip()
     if raw.startswith("{") and _close_of(raw, 0) == len(raw) - 1:  # {Corporate Author}
         return norm(raw)
-    name = detex(raw)
+    name = re.sub(r"\s+\d{4}$", "", detex(raw))  # dblp's homonym number: "Wei Zhang 0001"
     if "," in name:
         return norm(name.split(",")[0])
     raw_words = name.split()

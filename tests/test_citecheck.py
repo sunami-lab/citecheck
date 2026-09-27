@@ -66,6 +66,7 @@ class TextTests(unittest.TestCase):
     def test_norm_handles_unicode_and_markup(self):
         self.assertEqual(cc.norm("Łukasz Kaiser"), "lukasz kaiser")
         self.assertEqual(cc.norm("<i>In vivo</i> imaging &amp; more"), "in vivo imaging more")
+        self.assertEqual(cc.norm("patients&amp;apos; risk"), "patients risk")  # entity escaped twice
 
     def test_title_sim(self):
         self.assertEqual(cc.title_sim("Attention is {All} you Need", "Attention Is All You Need"), 1.0)
@@ -82,6 +83,7 @@ class TextTests(unittest.TestCase):
         self.assertEqual(cc.family_name("van der Maaten, Laurens"), "van der maaten")
         self.assertEqual(cc.family_name("Laurens van der Maaten"), "maaten")
         self.assertEqual(cc.family_name("Martin Luther King Jr."), "king")
+        self.assertEqual(cc.family_name("Rohit Agrawal 0002"), "agrawal")  # dblp homonym number
         self.assertEqual(cc.split_names("{Barnes and Noble} and Doe, J."), ["{Barnes and Noble}", "Doe, J."])
 
     def test_vancouver_names_and_organisations(self):
