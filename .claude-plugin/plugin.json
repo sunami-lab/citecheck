@@ -1,7 +1,7 @@
 {
   "name": "citecheck",
   "displayName": "citecheck",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Catch hallucinated references before you submit. Checks every cited entry against Semantic Scholar, OpenAlex, Crossref and arXiv, and flags references that do not exist or whose authors, DOI, arXiv ID or year are wrong.",
   "author": {
     "name": "Chen-Yang Su",

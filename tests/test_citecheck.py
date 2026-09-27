@@ -116,6 +116,8 @@ class TextTests(unittest.TestCase):
         self.assertEqual(cc.find_url({"howpublished": r"\url{https://gptzero.me/news/iclr-2026/}"}),
                          "https://gptzero.me/news/iclr-2026/")
         self.assertEqual(cc.find_doi({"url": "https://doi.org/10.1145/3292500.3330701."}), "10.1145/3292500.3330701")
+        wiley = "10.1002/(SICI)1097-0193(1999)8:4<182::AID-HBM3>3.0.CO;2-M"  # < and > belong to the DOI
+        self.assertEqual(cc.find_doi({"doi": wiley}), wiley)
 
     def test_comment_line_inside_entry(self):
         fields, errors = cc.parse_bibtex("@article{a,\n  title = {T},\n  % note = {old},\n  year = 2017\n}")

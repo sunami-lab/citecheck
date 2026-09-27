@@ -44,7 +44,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 TITLE_SAME = 0.95  # title similarity at or above this: same title
 TITLE_NEAR = 0.85  # at or above this: same work, reworded or mistyped title
@@ -397,6 +397,7 @@ def parse_bibtex(text: str):
 # ---------------------------------------------------------------- identifiers
 
 _DOI = re.compile(r"(10\.\d{4,9}/[^\s\"<>{}]+)")
+_DOI_FIELD = re.compile(r"(10\.\d{4,9}/[^\s\"{}]+)")  # in the doi field itself: old Wiley DOIs contain < and >
 _ARXIV_ID = r"(\d{4}\.\d{4,5}|[a-z][a-z\-]+(?:\.[A-Z]{2})?/\d{7})"
 _ARXIV_IN_TEXT = re.compile(r"arxiv(?:\.org/(?:abs|pdf)/|[\s:.]*)" + _ARXIV_ID, re.I)
 
@@ -419,7 +420,7 @@ def find_arxiv(f: dict) -> str:
 
 def find_doi(f: dict) -> str:
     for name in ("doi", "url", "note", "howpublished", "title"):
-        m = _DOI.search(urllib.parse.unquote(f.get(name, "")))
+        m = (_DOI_FIELD if name == "doi" else _DOI).search(urllib.parse.unquote(f.get(name, "")))
         if m:
             doi = m.group(1).rstrip(".,;")
             return "" if doi.lower().startswith("10.48550/arxiv.") else doi  # arXiv DOIs: use the ID
@@ -1033,7 +1034,9 @@ class Checker:
         if e["year"] and e["year"] > THIS_YEAR + 1:
             id_problems.append(f"cited year {e['year']} is in the future")
 
-        if e["doi"] and "ids" not in ABLATE:
+        if e["doi"].startswith("10.5555/"):  # ACM Digital Library IDs, never registered at doi.org
+            res["notes"].append(f"DOI {e['doi']} is an ACM identifier that doi.org does not resolve; not checked")
+        elif e["doi"] and "ids" not in ABLATE:
             try:
                 rec = self._call("doi.org", doi_lookup, e["doi"])
                 self._check_id(e, f"DOI {e['doi']}", rec, cands, id_problems, res["notes"])

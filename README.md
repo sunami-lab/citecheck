@@ -22,7 +22,7 @@ $ python3 scripts/citecheck.py examples/
 [3/5] NOT_FOUND zhang2024retrieval
 [4/5] MISMATCH  song2020denoising
 [5/5] CHECK     kingma2011adam
-citecheck 0.3.1: 5 references in examples/
+citecheck 0.3.2: 5 references in examples/
   NOT_FOUND 1   MISMATCH 1   CHECK 1   VERIFIED 2
   checking the 5 entries cited in the sources (--all checks every entry)
   warning: the same work is cited under several keys: ho2020denoising, song2020denoising
