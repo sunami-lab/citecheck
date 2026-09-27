@@ -97,6 +97,8 @@ class TextTests(unittest.TestCase):
                          ["Franz Aichberger", "Lily Chen", "John Smith"])
         self.assertEqual(cc.split_names("van der Maaten, Laurens and Smith, John A."),
                          ["van der Maaten, Laurens", "Smith, John A."])
+        self.assertEqual(cc.split_names("Happee, Riender and de Winter, Joost CF"),
+                         ["Happee, Riender", "de Winter, Joost CF"])
         self.assertEqual(cc.author_overlap(["Guo, Daya", "Yang, Dejian"], ["DeepSeek-AI"]), (None, []))
         self.assertEqual(cc.author_overlap(["{OpenCitations}"], ["Chiara Di Giambattista"]), (None, []))
 
@@ -178,10 +180,77 @@ def entry(**kw):
     return base
 
 
+RIS = """TY  - JOUR
+AU  - Ho, Jonathan
+AU  - Jain, Ajay
+TI  - Denoising Diffusion Probabilistic Models
+JO  - Adv Neural Inf Process Syst
+PY  - 2020
+DO  - https://doi.org/10.5555/3495724.3496298
+ID  - 7
+ER  - 
+
+TY  - BOOK
+AU  - Goodfellow, Ian
+T1  - Deep Learning
+PY  - 2016///
+UR  - https://www.deeplearningbook.org
+ER  - 
+"""
+
+ENDNOTE = """<?xml version="1.0" encoding="UTF-8"?><xml><records><record><rec-number>12</rec-number>
+<ref-type name="Journal Article">17</ref-type><contributors><authors><author><style>LeCun, Yann</style></author>
+<author><style>Bengio, Yoshua</style></author></authors></contributors><titles><title><style>Deep learning</style></title>
+<secondary-title><style>Nature</style></secondary-title></titles><dates><year><style>2015</style></year></dates>
+<electronic-resource-num><style>10.1038/nature14539</style></electronic-resource-num></record></records></xml>"""
+
+
+class ReferenceManagerTests(unittest.TestCase):
+    def test_ris(self):
+        fields, errors = cc.parse_ris(RIS)
+        self.assertEqual(errors, [])
+        a, b = [cc.to_entry(f) for f in fields]
+        self.assertEqual((a["key"], a["type"], a["year"], a["venue"]), ("7", "article", 2020, "Adv Neural Inf Process Syst"))
+        self.assertEqual(a["authors"], ["Ho, Jonathan", "Jain, Ajay"])
+        self.assertEqual(a["doi"], "10.5555/3495724.3496298")
+        self.assertEqual((b["type"], b["title"], b["year"], b["venue"]), ("book", "Deep Learning", 2016, ""))
+        self.assertEqual(b["url"], "https://www.deeplearningbook.org")
+
+    def test_endnote_xml(self):
+        fields, errors = cc.parse_endnote_xml(ENDNOTE)
+        e = cc.to_entry(fields[0])
+        self.assertEqual((e["key"], e["type"], e["title"], e["year"], e["venue"], e["doi"]),
+                         ("rec12", "article", "Deep learning", 2015, "Nature", "10.1038/nature14539"))
+        self.assertEqual(e["authors"], ["LeCun, Yann", "Bengio, Yoshua"])
+
+    def test_load_by_extension(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            for name, text in (("refs.ris", RIS), ("export.txt", RIS), ("library.xml", ENDNOTE)):
+                path = os.path.join(d, name)
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                entries, _ = cc.load_entries(path)
+                self.assertTrue(entries and entries[0]["title"])
+
+
+class NameTests(unittest.TestCase):
+    def test_given_name_conflicts(self):
+        self.assertEqual(cc.given_name_conflicts(["Ethan Moreno", "Marco Tulio Lima"], ["Fábio Moreno", "Ian Lima"]),
+                         ["Ethan Moreno (record: Fábio Moreno)", "Marco Tulio Lima (record: Ian Lima)"])
+        for cited, record in ((["Moreno, F."], ["Fábio Moreno"]), (["Wei Zhang"], ["Zhang Wei"]),
+                              (["J. Robert Oppenheimer"], ["Robert Oppenheimer"]), (["Hastie TJ"], ["Trevor J. Hastie"]),
+                              (["van der Maaten, Laurens"], ["Laurens van der Maaten"]), (["Smith"], ["John Smith"]),
+                              (["Jean-Pierre Serre"], ["J.-P. Serre"]), (["Rohit Agrawal 0002"], ["Rohit Agrawal"]),
+                              (["Garcia", "J. P."], ["J. Garcia"])):  # "Garcia, J. P." split in two
+            self.assertEqual(cc.given_name_conflicts(cited, record), [], cited)
+
+
 class VerdictTests(unittest.TestCase):
     """Drive Checker.check with fake sources."""
 
-    def run_check(self, e, s2=(), openalex=(), crossref=(), arxiv=(), doi="unused", arxiv_ids=None, url_status=0):
+    def run_check(self, e, s2=(), openalex=(), crossref=(), arxiv=(), doi="unused", arxiv_ids=None, url_status=0,
+                  first_version=None):
         http = mock.Mock()
         http.status.return_value = url_status
         checker = cc.Checker(http)
@@ -191,7 +260,8 @@ class VerdictTests(unittest.TestCase):
                    mock.patch.object(cc, "openalex_search", side_effect=self._fake(openalex)),
                    mock.patch.object(cc, "crossref_search", side_effect=self._fake(crossref)),
                    mock.patch.object(cc, "arxiv_title", side_effect=self._fake(arxiv)),
-                   mock.patch.object(cc, "doi_lookup", return_value=doi)]
+                   mock.patch.object(cc, "doi_lookup", return_value=doi),
+                   mock.patch.object(cc, "arxiv_first_version", return_value=first_version)]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
@@ -265,6 +335,30 @@ class VerdictTests(unittest.TestCase):
         r = self.run_check(e, crossref=[published], arxiv_ids={"1102.4356": preprint})
         self.assertEqual(r["verdict"], "VERIFIED")
         self.assertTrue(any("retitled" in n for n in r["notes"]))
+
+    def test_given_name_swapped_for_namesake_is_check(self):
+        rec = cc._record("arXiv", "Prompt Injection Attacks on Retrieval Pipelines",
+                         ["Fábio Moreno", "Ian Lima"], 2022, arxiv="2211.00001")
+        e = entry(title="Prompt injection attacks on retrieval pipelines",
+                  authors=["Ethan Moreno", "Marco Tulio Lima"], year=2022)
+        r = self.run_check(e, s2=[rec])
+        self.assertEqual(r["verdict"], "CHECK")
+        self.assertIn("given name differs", r["issues"][0])
+
+    def test_arxiv_paper_renamed_after_version_1(self):
+        current = cc._record("arXiv", "Impact of shape fluctuations on nuclear Schiff moments",
+                             ["Zhou", "Yao", "Engel", "Meng"], 2025, arxiv="2507.01369")
+        v1 = cc._record("arXiv", "Effects of beyond-mean-field correlations on nuclear Schiff moments",
+                        ["Zhou", "Yao", "Engel", "Meng"], 2025, arxiv="2507.01369")
+        e = entry(title="Effects of beyond-mean-field correlations on nuclear Schiff moments",
+                  authors=["Zhou", "Yao", "Engel", "Meng"], year=2025, arxiv="2507.01369")
+        r = self.run_check(e, arxiv_ids={"2507.01369": current}, first_version=v1)
+        self.assertEqual(r["verdict"], "VERIFIED")
+        self.assertTrue(any("version 1" in n for n in r["notes"]))
+        # authors added after version 1: the citation of version 1 lists only its authors
+        current = dict(current, authors=["Zhou", "Yao", "Engel", "Meng", "Li", "Wang"])
+        r = self.run_check(e, arxiv_ids={"2507.01369": current}, first_version=v1)
+        self.assertEqual(r["verdict"], "VERIFIED", r["issues"])
 
     def test_unindexed_type_is_check_not_not_found(self):
         r = self.run_check(entry(type="phdthesis", title="Selected Topics in Relativistic Cosmology"))

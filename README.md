@@ -22,7 +22,7 @@ $ python3 scripts/citecheck.py examples/
 [3/5] NOT_FOUND zhang2024retrieval
 [4/5] MISMATCH  song2020denoising
 [5/5] CHECK     kingma2011adam
-citecheck 0.3.2: 5 references in examples/
+citecheck 0.4.0: 5 references in examples/
   NOT_FOUND 1   MISMATCH 1   CHECK 1   VERIFIED 2
   checking the 5 entries cited in the sources (--all checks every entry)
   warning: the same work is cited under several keys: ho2020denoising, song2020denoising
@@ -106,14 +106,16 @@ Then ask "check my references", or run `/citecheck:verify` with a paper folder, 
 
 For PDF, Word or pasted reference lists, Claude first extracts the references and then checks them. That also works for reviewers checking a submission. The skill also has Claude check any reference it writes itself.
 
-### Standalone script
+### Command line
 
 ```bash
-git clone https://github.com/sunami-lab/citecheck.git
-python3 citecheck/scripts/citecheck.py path/to/paper/
+pip install git+https://github.com/sunami-lab/citecheck.git
+citecheck path/to/paper/
 ```
 
-This needs Python 3.8+ and nothing else.
+Or run the single file without installing: `git clone https://github.com/sunami-lab/citecheck.git`, then `python3 citecheck/scripts/citecheck.py path/to/paper/`. Either way it needs Python 3.8+ and nothing else.
+
+**Writing in Word?** Export your library from EndNote, Zotero or Mendeley as RIS (or EndNote XML) and run `citecheck library.ris`. Every reference in the file is checked.
 
 ### One-time setup (recommended)
 
@@ -130,7 +132,7 @@ Without these steps citecheck still works through Crossref, arXiv and doi.org. I
 | | Verdict | Meaning |
 | --- | --- | --- |
 | ✓ | **VERIFIED** | title, authors, year and venue agree with an indexed record |
-| ! | **CHECK** | the paper exists but something differs: a title word, the year, an author, a truncated author list, the venue, or a preprint cited as published. Also used for retracted papers. Also used for work the indexes rarely hold, if it has a live URL or is a book, thesis, report or organisation's document (a model card, a blog post) |
+| ! | **CHECK** | the paper exists but something differs: a title word, the year, an author or an author's first name, a truncated author list, the venue, or a preprint cited as published. Also used for retracted papers. Also used for work the indexes rarely hold, if it has a live URL or is a book, thesis, report or organisation's document (a model card, a blog post) |
 | ✗ | **MISMATCH** | the title exists but most cited authors aren't on it, the DOI or arXiv ID points to a different paper or to nothing, or the year is in the future |
 | ✗ | **NOT_FOUND** | no index has a paper with this title |
 | ? | **ERROR** | too few sources answered to decide, or the entry's own DOI or arXiv ID could not be looked up |
@@ -141,15 +143,16 @@ MISMATCH and NOT_FOUND are the errors that get papers desk-rejected. CHECK items
 
 ## How it checks
 
-1. **Collect the cited keys.** From a folder or `.zip`, it reads every `.bib` file and keeps only the keys that the `.tex`, `.md`, `.qmd` or `.Rmd` sources cite.
+1. **Collect the cited keys.** From a folder or `.zip`, it reads every `.bib` file and keeps only the keys that the `.tex`, `.md`, `.qmd` or `.Rmd` sources cite. RIS and EndNote XML exports are read directly, and every reference in them is checked.
 2. **Resolve identifiers.** DOIs resolve through doi.org, which also reports retractions from Retraction Watch. arXiv IDs are looked up in batches.
    - An identifier that points to nothing is a MISMATCH.
    - So is one that points to an unrelated paper.
    - If it points to a paper with the same authors and a related title, citecheck treats it as a preprint or retitled version.
+   - If an arXiv paper was renamed in a later version, the cited title is compared with version 1.
 3. **Search by title, cheapest source first.** The order is the local DBLP index, Crossref, arXiv, Semantic Scholar, then OpenAlex, and it stops at the first record that agrees on everything. If no record lists the cited authors, it searches again among the first author's papers (Crossref, then OpenAlex), which gets past same-title noise.
 4. **Compare field by field.**
    - **Title:** compared word by word. Added or dropped stopwords, hyphenation, plurals and British/American spelling don't count; a swapped word does.
-   - **Authors:** compared by family name. An organisation author ("OpenAI") is not compared with a list of people. A record that lists only some of the cited authors counts as incomplete, not wrong.
+   - **Authors:** compared by family name. An organisation author ("OpenAI") is not compared with a list of people. A record that lists only some of the cited authors counts as incomplete, not wrong. When both the citation and the record give a first name, their initials must agree, which catches a real paper attributed to better-known namesakes.
    - **Year:** the cited year may be one year earlier or up to two years later than the record's, since preprints get published later.
    - **Venue:** 25 major computer-science and machine-learning venues are recognised by name and abbreviation.
 
@@ -157,7 +160,7 @@ MISMATCH and NOT_FOUND are the errors that get papers desk-rejected. CHECK items
 
 | Flag or variable | What it does |
 | --- | --- |
-| `PATH…` | `.bib` or `.json` files, a paper folder, or an Overleaf `.zip` (Menu → Download → Source) |
+| `PATH…` | `.bib`, `.json`, `.ris` or EndNote `.xml` files, a paper folder, or an Overleaf `.zip` (Menu → Download → Source) |
 | `--cited-in SRC…` | check only keys cited in these sources (automatic for a folder or `.zip`) |
 | `--all` | check every entry, cited or not |
 | `--fixes OUT.bib` | write corrected entries, built from the matched records, for MISMATCH and CHECK references. Your bibliography is never modified |
@@ -172,7 +175,7 @@ Input can also be JSON: `[{"key", "title", "authors": [...], "year", "venue", "d
 
 ## Does it work?
 
-Tested on 26 September 2026. The setup was the local DBLP index with no API keys, and OpenAlex's anonymous quota ran out partway through.
+Tested on 26 September 2026 with version 0.3.0. The setup was the local DBLP index with no API keys, and OpenAlex's anonymous quota ran out partway through. The first-name and renamed-preprint checks came later (0.4.0). Rerun on the same inputs, they changed no verdict on the HALLMARK test split and added 3 CHECK verdicts among 2,753 references from arXiv papers, 2 of them for a nickname or short form ("Bill" for William).
 
 **[HALLMARK](https://github.com/rpatrik96/hallmark), test split** (831 entries: 312 valid, 519 with one of 14 kinds of error):
 
@@ -229,8 +232,8 @@ Run the offline tests with `python3 -m unittest discover tests`. The benchmark h
 ## Limitations
 
 - **Only scholarly indexes.** Court rulings, standards, many books and web pages come back NOT_FOUND unless the entry has a URL (then CHECK). The Claude Code skill confirms these with a web search; the standalone script cannot.
-- **Venues are checked only for about 30 major computer-science and machine-learning venues.** Journals and smaller conferences are not compared.
-- **Authors are compared by family name.** A wrong given name, or a changed author order, passes. A fabricated list full of common family names (Wang, Li, Zhang) can share enough of them with the real authors to get only CHECK.
+- **Venues are checked only for about 30 major computer-science and machine-learning venues.** Journals and smaller conferences are not compared. A journal-name comparison was tried for 0.4.0 and left out: on real bibliographies nearly all of its flags were abbreviations, renamed journals or reprint records.
+- **First names are compared by initial.** A changed author order passes, and a nickname ("Bill" for William) gets CHECK. A fabricated list full of common family names (Wang, Li, Zhang) can share enough of them with the real authors to get only CHECK.
 - **New papers can lag.** A paper accepted this year may not be in the indexes yet, so a correct citation can get CHECK ("only a preprint version was found").
 - **Indexes make mistakes.** Semantic Scholar's GPT-1 record lists two of its four authors, so a correct citation of it gets CHECK.
 - **The claims check sees abstracts.** A claim made only deep in a paper's full text can be labelled plausible or unsupported. The skill opens the full text before it reports a flag, and a flag is a prompt to reread the paper, not a verdict.

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# "citecheck" is taken on PyPI by an unrelated project; the command is still `citecheck`.
+name = "citecheck-refs"
+dynamic = ["version"]
+description = "Check that every reference in a bibliography exists and matches its indexed record"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{ name = "Chen-Yang Su" }]
+dependencies = []
+
+[project.scripts]
+citecheck = "citecheck:main"
+
+[project.urls]
+Homepage = "https://github.com/sunami-lab/citecheck"
+
+[tool.setuptools]
+package-dir = { "" = "scripts" }
+py-modules = ["citecheck"]
+
+[tool.setuptools.dynamic]
+version = { attr = "citecheck.__version__" }

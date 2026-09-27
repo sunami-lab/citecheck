@@ -4,7 +4,8 @@
 Each entry is looked up by DOI (doi.org) and arXiv ID (arXiv API) when it carries one,
 then searched by title in Semantic Scholar, OpenAlex, Crossref and arXiv. The
 best-matching record is compared with the citation field by field: title, author
-family names and year.
+family names and initials, and year. Input is BibTeX, JSON, RIS or EndNote XML, a paper
+folder, or an Overleaf .zip.
 
 Verdicts
   VERIFIED   title, authors and year agree with an indexed record
@@ -44,14 +45,15 @@ import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 
 TITLE_SAME = 0.95  # title similarity at or above this: same title
 TITLE_NEAR = 0.85  # at or above this: same work, reworded or mistyped title
 AUTHORS_MIN = 0.5  # below this share of cited authors on the record: MISMATCH
 YEAR_LAG = (-1, 2)  # cited year minus record year: preprints are often published 1-2 years later
 THIS_YEAR = time.localtime().tm_year
-# For ablation studies only: comma-separated components to switch off (dblp, ids, anchored, venue).
+# For ablation studies only: comma-separated components to switch off
+# (dblp, ids, anchored, venue, names, retitle).
 ABLATE = set(filter(None, os.environ.get("CITECHECK_ABLATE", "").split(",")))
 CACHE_TTL = 7 * 86400
 USER_AGENT = f"citecheck/{__version__} (+https://github.com/sunami-lab/citecheck)"
@@ -206,7 +208,8 @@ def split_names(field: str) -> list:
     for n in names:  # "Franz Aichberger, Lily Chen, and John Smith": full names separated by commas
         pieces = [p.strip() for p in n.split(",")]
         filled = [p for p in pieces if p]
-        if "{" not in n and len(filled) >= 2 and all(len(p.split()) >= 2 for p in filled):
+        if ("{" not in n and len(filled) >= 2 and all(len(p.split()) >= 2 for p in filled)
+                and filled[0].split()[0] not in _PARTICLES):  # "de Winter, Joost CF" is one name
             split += filled
         else:
             split.append(n)
@@ -276,6 +279,41 @@ def author_overlap(cited: list, record: list):
             continue
         missing.append(detex(raw))
     return round(1 - len(missing) / len(cited), 3), missing
+
+
+_PARTICLES = {"van", "von", "der", "den", "de", "del", "della", "di", "da", "du", "la", "le", "dos", "das",
+              "jr", "sr", "ii", "iii", "iv"}
+_INITIALS = re.compile(r"(?:[A-Z]\.?-?){1,3}")
+
+
+def _initials(raw: str, family: set) -> set:
+    """First letters of the given names in one name, leaving out the family-name words."""
+    out = set()
+    for w in re.sub(r"\s+\d{4}$", "", detex(raw)).replace(",", " ").split():
+        tokens = norm(w).split()
+        if not tokens or set(tokens) <= family:
+            continue
+        if _INITIALS.fullmatch(w):  # "J.", "TJ", "J.-P."
+            out |= {c.lower() for c in w if c.isalpha()}
+        else:
+            out |= {t[0] for t in tokens if t not in family and t not in _PARTICLES}
+    return out
+
+
+def given_name_conflicts(cited: list, record: list) -> list:
+    """Cited authors whose family name is on the record but whose given names share no initial with any
+    record author of that family name ("Ethan Moreno" for "Fábio Moreno"). Names without given names, names
+    that are only initials, and name orders that swap family and given name, never conflict."""
+    people = [r for r in record if not is_org(r)]
+    out = []
+    for raw in cited:
+        fam = set(family_name(raw).split())
+        mine = _initials(raw, fam) if any(len(w) > 1 for w in fam) and not is_org(raw) else set()
+        same = [r for r in people if fam <= set(norm(detex(r)).split())] if mine else []
+        theirs = [_initials(r, fam) for r in same]
+        if same and all(t and not (t & mine) for t in theirs):
+            out.append(f"{detex(raw).strip()} (record: {detex(same[0]).strip()})")
+    return out
 
 
 def record_within(cited: list, record: list) -> bool:
@@ -453,10 +491,85 @@ def to_entry(f: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------- RIS and EndNote XML (reference-manager exports)
+
+_RIS_LINE = re.compile(r"^([A-Z][A-Z0-9])\s{1,2}-\s?(.*)$")
+_RIS_TYPES = {"JOUR": "article", "JFULL": "article", "EJOUR": "article", "MGZN": "article", "NEWS": "article",
+              "CONF": "inproceedings", "CPAPER": "inproceedings", "BOOK": "book", "EBOOK": "book", "EDBOOK": "book",
+              "CHAP": "incollection", "ECHAP": "incollection", "THES": "phdthesis", "RPRT": "techreport",
+              "COMP": "software", "UNPB": "unpublished"}
+_ENDNOTE_TYPES = {"journal article": "article", "electronic article": "article", "magazine article": "article",
+                  "conference proceedings": "inproceedings", "conference paper": "inproceedings", "book": "book",
+                  "edited book": "book", "book section": "incollection", "thesis": "phdthesis", "report": "techreport",
+                  "computer program": "software"}
+
+
+def _reference_fields(i, typ, key, title, authors, year, container, doi, url, note=""):
+    """Fields of a reference-manager record, named as in BibTeX."""
+    f = {"key": key or f"ref{i}", "type": typ, "title": title, "author": " and ".join(authors), "year": year,
+         "doi": doi, "url": url, "note": note}
+    f["journal" if typ == "article" else "booktitle"] = container
+    return f
+
+
+def parse_ris(text: str):
+    """RIS, as exported by EndNote, Zotero, Mendeley and most databases."""
+    records, cur = [], None
+    for line in text.splitlines():
+        m = _RIS_LINE.match(line.strip("\ufeff"))
+        if not m:
+            continue
+        tag, value = m.group(1), m.group(2).strip()
+        if tag == "TY":
+            cur = {"TY": [value]}
+        elif tag == "ER":
+            if cur:
+                records.append(cur)
+            cur = None
+        elif cur is not None:
+            cur.setdefault(tag, []).append(value)
+    first = lambda r, *tags: next((r[t][0] for t in tags if r.get(t)), "")  # noqa: E731
+    fields = []
+    for i, r in enumerate(records, 1):
+        typ = _RIS_TYPES.get(first(r, "TY").upper(), "misc")
+        authors = r.get("AU") or r.get("A1") or r.get("A2") or r.get("ED") or []
+        fields.append(_reference_fields(i, typ, first(r, "ID"), first(r, "TI", "T1", "CT", "BT"), authors,
+                                        first(r, "PY", "Y1", "DA"), first(r, "JF", "T2", "JO", "JA", "J2", "BT"),
+                                        first(r, "DO"), first(r, "UR", "L1", "L2"), first(r, "N1")))
+    return fields, ([] if records or not text.strip() else ["no RIS records (TY ... ER) found"])
+
+
+def parse_endnote_xml(text: str):
+    """EndNote's XML export (File > Export > XML)."""
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as err:
+        return [], [f"not readable as EndNote XML: {err}"]
+    txt = lambda el, path: "".join(el.find(path).itertext()).strip() if el.find(path) is not None else ""  # noqa: E731
+    fields = []
+    for i, rec in enumerate(root.iter("record"), 1):
+        ref_type = rec.find("ref-type")
+        typ = _ENDNOTE_TYPES.get((ref_type.get("name", "") if ref_type is not None else "").lower(), "misc")
+        authors = ["".join(a.itertext()).strip() for a in rec.findall("contributors/authors/author")]
+        container = txt(rec, "titles/secondary-title") or txt(rec, "periodical/full-title")
+        fields.append(_reference_fields(i, typ, txt(rec, "rec-number") and f"rec{txt(rec, 'rec-number')}",
+                                        txt(rec, "titles/title"), authors, txt(rec, "dates/year"), container,
+                                        txt(rec, "electronic-resource-num"), txt(rec, "urls/related-urls/url"),
+                                        txt(rec, "notes")))
+    return fields, ([] if fields else ["no EndNote records found"])
+
+
 def load_entries(path: str):
     with open(path, encoding="utf-8", errors="replace") as fh:
         text = fh.read()
-    if not path.lower().endswith(".json"):
+    lower = path.lower()
+    if lower.endswith(".ris") or (lower.endswith(".txt") and re.match(r"\s*\ufeff?TY\s{1,2}-", text)):
+        fields, errors = parse_ris(text)
+        return [to_entry(f) for f in fields], errors
+    if lower.endswith(".xml"):
+        fields, errors = parse_endnote_xml(text)
+        return [to_entry(f) for f in fields], errors
+    if not lower.endswith(".json"):
         fields, errors = parse_bibtex(text)
         return [to_entry(f) for f in fields], errors
     data = json.loads(text)
@@ -791,6 +904,12 @@ def arxiv_ids(http, ids):
     return found, failed
 
 
+def arxiv_first_version(http, aid):
+    """The record of version 1 of an arXiv paper (its title may differ from the current version's)."""
+    found = _arxiv_query(http, {"id_list": f"{aid}v1", "max_results": 1})
+    return found[0] if found else None
+
+
 def doi_lookup(http, doi):
     """CSL-JSON via doi.org content negotiation (Crossref, DataCite, mEDRA...); None if the DOI does not exist."""
     status, body = http.get("https://doi.org/" + urllib.parse.quote(doi, safe="/"),
@@ -1015,6 +1134,8 @@ class Checker:
         c = self._score(e, rec)
         if c["title_sim"] >= TITLE_NEAR:
             cands.append(c)
+        elif self._first_version_matches(e, label, c, cands, notes):
+            return
         elif (c["author_share"] is not None and c["author_share"] >= AUTHORS_MIN and self._year_ok(c)
               and word_overlap(e["title"], rec["title"]) >= 0.4):  # same authors, related title
             notes.append(f'{label} is titled "{rec["title"]}" there; same authors, so taken as a preprint '
@@ -1022,6 +1143,21 @@ class Checker:
             cands.append(dict(c, title_sim=TITLE_NEAR, retitled=True))
         else:
             problems.append(f'{label} resolves to a different work: "{rec["title"]}"')
+
+    def _first_version_matches(self, e, label, c, cands, notes) -> bool:
+        """An arXiv paper renamed in a later version, cited under its first title by the same authors."""
+        if not label.startswith("arXiv:") or not c["author_share"] or c["author_share"] < 1.0 or "retitle" in ABLATE:
+            return False
+        try:
+            first = self._call("arXiv", arxiv_first_version, e["arxiv"])
+        except SourceError:
+            return False
+        if not first or title_sim(e["title"], first["title"]) < TITLE_NEAR:
+            return False
+        notes.append(f'{label}: the cited title is that of version 1; the current version is titled '
+                     f'"{c["record"]["title"]}"')
+        cands.append(self._score(e, dict(c["record"], title=first["title"], authors=first["authors"])))
+        return True
 
     def check(self, e):
         res = {"key": e["key"], "verdict": "", "issues": [], "notes": [], "match": None,
@@ -1112,6 +1248,9 @@ class Checker:
             issues.append(f"cites {len(e['authors'])} of the record's {len(rec['authors'])} authors, without 'and others'")
         if best["missing_authors"]:
             issues.append(f"cited author(s) not on the record: {'; '.join(best['missing_authors'])}")
+        conflicts = given_name_conflicts(e["authors"], rec["authors"]) if "names" not in ABLATE else []
+        if conflicts:
+            issues.append(f"given name differs from the record: {'; '.join(conflicts)}")
         if not self._year_ok(best):
             issues.append(f"cited year {e['year']}, record year {rec['year']}")
         venue = self._venue_issue(e, near, answered)
@@ -1308,7 +1447,7 @@ def claims_payload(checker, results, contexts: dict) -> list:
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="citecheck", description=__doc__.split("\n\n")[0])
     ap.add_argument("inputs", nargs="*", metavar="PATH",
-                    help=".bib or .json files, a paper directory, or an Overleaf .zip download")
+                    help=".bib, .json, .ris or EndNote .xml files, a paper directory, or an Overleaf .zip download")
     ap.add_argument("--cited-in", nargs="+", metavar="SRC",
                     help="check only keys cited in these .tex/.md/.qmd files or directories "
                          "(the default for a directory or .zip input)")
@@ -1333,7 +1472,7 @@ def main(argv=None):
         build_dblp(args.build_dblp or None)
         return 0
     if not args.inputs:
-        ap.error("give a .bib/.json file, a paper directory or a .zip")
+        ap.error("give a .bib, .json, .ris or EndNote .xml file, a paper directory or a .zip")
 
     with tempfile.TemporaryDirectory() as tmp:
         try:
