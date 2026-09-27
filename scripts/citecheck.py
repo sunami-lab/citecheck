@@ -51,6 +51,8 @@ TITLE_NEAR = 0.85  # at or above this: same work, reworded or mistyped title
 AUTHORS_MIN = 0.5  # below this share of cited authors on the record: MISMATCH
 YEAR_LAG = (-1, 2)  # cited year minus record year: preprints are often published 1-2 years later
 THIS_YEAR = time.localtime().tm_year
+# For ablation studies only: comma-separated components to switch off (dblp, ids, anchored, venue).
+ABLATE = set(filter(None, os.environ.get("CITECHECK_ABLATE", "").split(",")))
 CACHE_TTL = 7 * 86400
 USER_AGENT = f"citecheck/{__version__} (+https://github.com/sunami-lab/citecheck)"
 MAILTO = os.environ.get("CITECHECK_MAILTO", "")
@@ -836,6 +838,8 @@ def cache_dir() -> str:
 def dblp_db():
     """The local DBLP index, or None if it has not been built."""
     global _dblp
+    if "dblp" in ABLATE:
+        return None
     path = os.path.join(cache_dir(), "dblp.sqlite")
     if _dblp is None and os.path.exists(path):
         _dblp = sqlite3.connect(path)
@@ -968,7 +972,7 @@ class Checker:
 
     def prefetch_arxiv(self, entries):
         ids = [e["arxiv"] for e in entries if e["arxiv"]]
-        if not ids:
+        if not ids or "ids" in ABLATE:
             return
         self.arxiv, self.arxiv_failed = self._call("arXiv", arxiv_ids, ids)
 
@@ -1029,14 +1033,14 @@ class Checker:
         if e["year"] and e["year"] > THIS_YEAR + 1:
             id_problems.append(f"cited year {e['year']} is in the future")
 
-        if e["doi"]:
+        if e["doi"] and "ids" not in ABLATE:
             try:
                 rec = self._call("doi.org", doi_lookup, e["doi"])
                 self._check_id(e, f"DOI {e['doi']}", rec, cands, id_problems, res["notes"])
             except SourceError as err:
                 res["notes"].append(f"DOI not checked: {err}")
                 res["id_unchecked"] = True
-        if e["arxiv"]:
+        if e["arxiv"] and "ids" not in ABLATE:
             if e["arxiv"] in self.arxiv_failed:
                 res["notes"].append("arXiv ID not checked: arXiv unavailable")
                 res["id_unchecked"] = True
@@ -1058,7 +1062,7 @@ class Checker:
             # title search found nothing by these authors: search within the first author's works
             for name, fn, args in (("Crossref", crossref_search, (e["title"], first[-1] if first else "", None, True)),
                                    ("OpenAlex", openalex_search, (e["title"], first[-1] if first else ""))):
-                if not first or any(self._consistent(c) for c in cands):
+                if not first or "anchored" in ABLATE or any(self._consistent(c) for c in cands):
                     break
                 try:
                     cands += [self._score(e, r) for r in self._call(name, fn, *args)]
@@ -1122,7 +1126,7 @@ class Checker:
     def _venue_issue(self, e, near, answered) -> str:
         """A cited major venue that no version of the paper appeared at."""
         text = e["venue"].strip()
-        if not text or "http" in text:
+        if not text or "http" in text or "venue" in ABLATE:
             return ""
         cited = venue_ids(text)
         # DBLP writes workshops as "WMT@EACL": the host conference is not where the paper appeared

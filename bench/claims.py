@@ -7,7 +7,7 @@ imitates a real but wrong citation on the same topic. Claude judges shuffled bat
 skills/claims/rubric.md and never sees which pairs are swaps.
 
     python3 scripts/citecheck.py paper_dir/ --claims paper.claims.json      # per paper
-    python3 bench/claims.py make  pairs.jsonl a.claims.json b.claims.json ...
+    python3 bench/claims.py make  pairs.jsonl [--near] a.claims.json b.claims.json ...
     python3 bench/claims.py judge pairs.jsonl judged.jsonl [--model sonnet]
     python3 bench/claims.py score pairs.jsonl judged.jsonl
 """
@@ -26,22 +26,34 @@ LABELS = ("SUPPORTED", "PLAUSIBLE", "UNSUPPORTED", "CONTRADICTED", "UNCHECKED")
 
 
 def make(out, *claims_files):
+    """--near: the decoy must be cited within 15 lines of the sentence in the same file, so it is
+    usually on the same narrow topic (a harder swap)."""
+    near = "--near" in claims_files
+    claims_files = [f for f in claims_files if f != "--near"]
     rng = random.Random(0)
     pairs = []
     for path in claims_files:
         refs = [r for r in json.load(open(path, encoding="utf-8")) if r["abstract"] and len(r["abstract"]) > 200
                 and r["verdict"] in ("VERIFIED", "CHECK")]
         by_key = {r["key"]: r for r in refs}
-        items = [(r["key"], c["sentence"]) for r in refs for c in r["contexts"]
+        items = [(r["key"], c) for r in refs for c in r["contexts"]
                  if 40 <= len(c["sentence"]) <= 600 and len(re.findall(r"\[[^\]]+\]", c["sentence"])) <= 3
                  and len(re.findall(r"[A-Za-z]{3,}", c["sentence"])) >= 8]  # skip equation fragments
         rng.shuffle(items)
         paper = os.path.basename(path)
-        for key, sentence in items[:PER_PAPER]:
+        taken = 0
+        for key, ctx in (items if near else items[:PER_PAPER]):
+            if taken == PER_PAPER:
+                break
+            sentence = ctx["sentence"]
             cited_here = {k.strip(" []") for group in re.findall(r"\[([^\]]+)\]", sentence) for k in group.split(",")}
             others = [k for k in by_key if k not in cited_here | {key}]
+            if near:
+                others = [k for k in others if any(c2["file"] == ctx["file"] and abs(c2["line"] - ctx["line"]) <= 15
+                                                   for c2 in by_key[k]["contexts"])]
             if not others:
                 continue
+            taken += 1
             decoy = rng.choice(others)
             for kind, source in (("ORIGINAL", key), ("SWAP", decoy)):
                 pairs.append({"paper": paper, "kind": kind, "target": key, "sentence": sentence,
@@ -67,9 +79,12 @@ def _judge_batch(batch, model):
                           input=_prompt(batch), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           universal_newlines=True, timeout=900)
     try:
-        text = json.loads(proc.stdout)["result"]
-        return json.loads(text[text.index("["):text.rindex("]") + 1])
-    except (ValueError, KeyError) as err:  # rerunning judge resumes and retries this batch
+        reply = json.loads(proc.stdout)
+        print(f"batch cost_usd={reply.get('total_cost_usd', 0):.4f}", file=sys.stderr, flush=True)
+        text = reply["result"]
+        start = re.search(r"\[\s*\{", text).start()  # the array, not a bracket in text before it
+        return json.loads(text[start:text.rindex("]") + 1])
+    except (ValueError, KeyError, AttributeError) as err:  # rerunning judge resumes and retries this batch
         print(f"batch of {len(batch)} failed: {err}", file=sys.stderr)
         return []
 
