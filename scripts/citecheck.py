@@ -512,6 +512,19 @@ def _reference_fields(i, typ, key, title, authors, year, container, doi, url, no
     return f
 
 
+def _readable_keys(fields: list) -> list:
+    """Keys like 'lecun2015deep' for reference-manager exports, whose record numbers mean nothing in a report."""
+    used = Counter()
+    for f in fields:
+        authors = split_names(f["author"])
+        word = next((w for w in norm(f["title"]).split() if w not in _STOP), "")
+        base = (family_name(authors[0]).replace(" ", "") if authors else "") + str(_year(f["year"]) or "") + word
+        base = base or f["key"]
+        used[base] += 1
+        f["key"] = base if used[base] == 1 else base + "bcdefghijklmnopqrstuvwxyz"[min(used[base] - 2, 24)]
+    return fields
+
+
 def parse_ris(text: str):
     """RIS, as exported by EndNote, Zotero, Mendeley and most databases."""
     records, cur = [], None
@@ -533,10 +546,10 @@ def parse_ris(text: str):
     for i, r in enumerate(records, 1):
         typ = _RIS_TYPES.get(first(r, "TY").upper(), "misc")
         authors = r.get("AU") or r.get("A1") or r.get("A2") or r.get("ED") or []
-        fields.append(_reference_fields(i, typ, first(r, "ID"), first(r, "TI", "T1", "CT", "BT"), authors,
+        fields.append(_reference_fields(i, typ, "", first(r, "TI", "T1", "CT", "BT"), authors,
                                         first(r, "PY", "Y1", "DA"), first(r, "JF", "T2", "JO", "JA", "J2", "BT"),
                                         first(r, "DO"), first(r, "UR", "L1", "L2"), first(r, "N1")))
-    return fields, ([] if records or not text.strip() else ["no RIS records (TY ... ER) found"])
+    return _readable_keys(fields), ([] if records or not text.strip() else ["no RIS records (TY ... ER) found"])
 
 
 def parse_endnote_xml(text: str):
@@ -552,11 +565,11 @@ def parse_endnote_xml(text: str):
         typ = _ENDNOTE_TYPES.get((ref_type.get("name", "") if ref_type is not None else "").lower(), "misc")
         authors = ["".join(a.itertext()).strip() for a in rec.findall("contributors/authors/author")]
         container = txt(rec, "titles/secondary-title") or txt(rec, "periodical/full-title")
-        fields.append(_reference_fields(i, typ, txt(rec, "rec-number") and f"rec{txt(rec, 'rec-number')}",
+        fields.append(_reference_fields(i, typ, "",
                                         txt(rec, "titles/title"), authors, txt(rec, "dates/year"), container,
                                         txt(rec, "electronic-resource-num"), txt(rec, "urls/related-urls/url"),
                                         txt(rec, "notes")))
-    return fields, ([] if fields else ["no EndNote records found"])
+    return _readable_keys(fields), ([] if fields else ["no EndNote records found"])
 
 
 def load_entries(path: str):
@@ -569,12 +582,20 @@ def load_entries(path: str):
     if lower.endswith(".xml"):
         fields, errors = parse_endnote_xml(text)
         return [to_entry(f) for f in fields], errors
-    if not lower.endswith(".json"):
+    if lower.endswith((".bib", ".bibtex")):
         fields, errors = parse_bibtex(text)
         return [to_entry(f) for f in fields], errors
-    data = json.loads(text)
-    if isinstance(data, dict):
-        data = data.get("references", [])
+    if not lower.endswith(".json"):
+        raise InputError(f"{path}: unsupported file type. Give a .bib, .json, .ris or EndNote .xml file, a paper "
+                         "folder or an Overleaf .zip; for a PDF or Word document, export or extract the references first")
+    try:
+        data = json.loads(text)
+    except ValueError as err:
+        raise InputError(f"{path}: not valid JSON ({err})") from None
+    if isinstance(data, dict) and isinstance(data.get("references"), list):
+        data = data["references"]
+    if not isinstance(data, list):
+        raise InputError(f'{path}: expected a JSON list of references, or an object with a "references" list')
     entries = []
     for i, d in enumerate(data, 1):
         authors = d.get("authors") or []
@@ -721,6 +742,7 @@ class Http:
     def __init__(self, cache_path=None):
         self.next_ok = {}
         self.db = None
+        self.cert_error = False  # a TLS certificate could not be verified (e.g. python.org Python on macOS)
         if cache_path:
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
             self.db = sqlite3.connect(cache_path)
@@ -756,6 +778,7 @@ class Http:
                     continue
             except (OSError, http.client.HTTPException) as e:
                 status, body = 0, str(e)
+                self.cert_error = self.cert_error or "CERTIFICATE_VERIFY_FAILED" in body
                 if attempt >= 1:  # unreachable twice: offline or blocked, fail fast
                     break
                 time.sleep(1)
@@ -1244,7 +1267,8 @@ class Checker:
             changed = "; ".join(f'missing "{b}"' if not a else f'extra "{a}"' if not b else f'"{a}" vs "{b}"'
                                 for a, b in best["title_diff"][:3])
             issues.append(f'title differs from the record{f" ({changed})" if changed else ""}: "{rec["title"]}"')
-        if e["authors"] and not e["etal"] and len(rec["authors"]) > len(e["authors"]):
+        if (e["authors"] and not e["etal"] and len(rec["authors"]) > len(e["authors"])
+                and not all(is_org(a) for a in e["authors"])):
             issues.append(f"cites {len(e['authors'])} of the record's {len(rec['authors'])} authors, without 'and others'")
         if best["missing_authors"]:
             issues.append(f"cited author(s) not on the record: {'; '.join(best['missing_authors'])}")
@@ -1364,6 +1388,10 @@ def hints(results, checker) -> list:
     """Advice when rationed sources limited the run."""
     failures = [n for r in results for n in r["notes"] if " HTTP " in n]
     if failures and all("unreachable" in n for n in failures):
+        if getattr(checker.http, "cert_error", False) is True:
+            return ["no source could be reached because Python could not verify their SSL certificates. With "
+                    "Python from python.org on macOS, run 'Install Certificates.command' in its Applications folder; "
+                    "behind a company proxy, point SSL_CERT_FILE at the proxy's certificate bundle"]
         return ["no source could be reached: check the network connection or proxy"]
     trouble = " ".join(n for r in results for n in r["notes"]) + " ".join(checker.disabled)
     out = []
@@ -1391,7 +1419,7 @@ def suggested_bibtex(r) -> str:
 
 def render(results, source, extra_lines):
     counts = Counter(r["verdict"] for r in results)
-    lines = [f"citecheck {__version__}: {len(results)} references in {source}",
+    lines = [f"citecheck {__version__}: {len(results)} reference{'' if len(results) == 1 else 's'} in {source}",
              "  " + "   ".join(f"{v} {counts[v]}" for v in ORDER if counts[v])] + extra_lines
     for r in sorted(results, key=lambda r: ORDER.index(r["verdict"])):
         if r["verdict"] == "VERIFIED":
@@ -1444,8 +1472,50 @@ def claims_payload(checker, results, contexts: dict) -> list:
     return out
 
 
+_BIB_INPUT = (".bib", ".bibtex", ".json", ".ris", ".xml", ".zip")
+HELP_EPILOG = """verdicts:
+  VERIFIED   title, authors and year agree with an indexed record
+  CHECK      the work exists but a field differs (a title word, the year, an author or first name,
+             a truncated author list, the venue, a preprint cited as published), it is retracted,
+             or it is not an indexed paper (a live URL, thesis, report or book)
+  MISMATCH   the title exists but most cited authors are not on it, or the DOI/arXiv ID points
+             to a different work or to nothing
+  NOT_FOUND  no index has a work with this title
+  ERROR      too few sources answered to decide
+
+exit status: 0 no problems found (CHECK items may still need a look), 1 at least one NOT_FOUND or
+  MISMATCH, 2 unusable input, 3 some references could not be checked
+
+environment: S2_API_KEY and OPENALEX_API_KEY (free keys; fewer ERROR verdicts), CITECHECK_MAILTO
+  (an email address for the Crossref and OpenAlex polite pools)
+cache and dblp index: ~/.cache/citecheck (or $XDG_CACHE_HOME/citecheck)
+"""
+
+
+def split_inputs(inputs: list, cited_in):
+    """--cited-in takes several values, so it swallows a bibliography given after it ("--cited-in main.tex refs.bib")."""
+    if inputs or not cited_in:
+        return inputs, cited_in
+    moved = [p for p in cited_in if p.lower().endswith(_BIB_INPUT)]
+    return moved, [p for p in cited_in if p not in moved]
+
+
+def prepare_outputs(paths: list):
+    """Create the folders of the output files before the run, so a long run cannot fail at the end."""
+    for p in paths:
+        if p:
+            os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
+
+
+def exit_status(verdicts, unparsed: int = 0) -> int:
+    """1: a reference is NOT_FOUND or MISMATCH; 3: some references could not be checked; 0: none of these."""
+    verdicts = set(verdicts)
+    return 1 if verdicts & set(FLAGGED) else 3 if "ERROR" in verdicts or unparsed else 0
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="citecheck", description=__doc__.split("\n\n")[0])
+    ap = argparse.ArgumentParser(prog="citecheck", description=__doc__.split("\n\n")[0], epilog=HELP_EPILOG,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inputs", nargs="*", metavar="PATH",
                     help=".bib, .json, .ris or EndNote .xml files, a paper directory, or an Overleaf .zip download")
     ap.add_argument("--cited-in", nargs="+", metavar="SRC",
@@ -1461,9 +1531,12 @@ def main(argv=None):
                          "(your bibliography is never modified)")
     ap.add_argument("--no-cache", action="store_true", help="bypass the 7-day HTTP cache")
     ap.add_argument("--build-dblp", nargs="?", const="", metavar="DUMP",
-                    help="download dblp's monthly release (~1.1 GB) and index it for offline checks, then exit")
+                    help="download dblp's monthly release (~1.1 GB) and index it for offline checks, then exit; "
+                         "DUMP is a dblp.xml.gz you already downloaded. The download and the index (about 3.3 GB "
+                         "together) are kept in the cache folder; the download can be deleted afterwards")
     ap.add_argument("--version", action="version", version=f"citecheck {__version__}")
     args = ap.parse_args(argv)
+    args.inputs, args.cited_in = split_inputs(args.inputs, args.cited_in)
     try:
         sys.stdout.reconfigure(errors="replace")
     except AttributeError:
@@ -1476,16 +1549,21 @@ def main(argv=None):
 
     with tempfile.TemporaryDirectory() as tmp:
         try:
+            prepare_outputs([args.json, args.fixes, args.claims])
             bibs, roots = collect_inputs(args.inputs, tmp)
-            entries, extra, seen = [], [], set()
+            entries, extra, seen, unparsed = [], [], set(), 0
             for path in bibs:
                 loaded, errors = load_entries(path)
                 extra += [f"  warning: {os.path.basename(path)}: {e}" for e in errors]
+                unparsed += len(errors)
                 dupes = sorted({e["key"] for e in loaded if e["key"] in seen})
                 if dupes:
                     extra.append(f"  warning: duplicate keys (first one kept): {', '.join(dupes)}")
                 entries += [e for e in loaded if e["key"] not in seen]
                 seen.update(e["key"] for e in loaded)
+            if not entries:
+                raise InputError(f"no references found in {', '.join(args.inputs)}"
+                                 + (f" ({errors[0]})" if errors else ""))
             sources = args.cited_in or roots
             cited = cited_keys(sources) if sources and not args.all else {"*"}
             contexts = citation_contexts(sources) if args.claims and sources else {}  # before a .zip's folder goes
@@ -1494,7 +1572,11 @@ def main(argv=None):
             return 2
     if "*" not in cited:
         missing = sorted(cited - seen)
-        entries = [e for e in entries if e["key"] in cited]
+        total, entries = len(entries), [e for e in entries if e["key"] in cited]
+        if not entries:
+            print(f"citecheck: none of the {total} entries in the bibliography is cited in the sources; "
+                  f"use --all to check every entry", file=sys.stderr)
+            return 2
         extra.append(f"  checking the {len(entries)} entries cited in the sources (--all checks every entry)")
         if missing:
             extra.append(f"  warning: cited but not in the bibliography: {', '.join(missing)}")
@@ -1542,8 +1624,7 @@ def main(argv=None):
         with open(args.json, "w", encoding="utf-8") as fh:
             json.dump({"version": __version__, "inputs": args.inputs, "duplicates": duplicates(results),
                        "results": results}, fh, indent=2, ensure_ascii=False)
-    verdicts = {r["verdict"] for r in results}
-    return 1 if verdicts & set(FLAGGED) else 3 if "ERROR" in verdicts else 0
+    return exit_status((r["verdict"] for r in results), unparsed)
 
 
 if __name__ == "__main__":

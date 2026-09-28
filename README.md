@@ -8,8 +8,8 @@
 
 <p align="center">
   <a href="#install"><img src="https://img.shields.io/badge/Claude_Code-plugin-d97757?style=flat-square" alt="Claude Code plugin"></a>
-  <a href="scripts/citecheck.py"><img src="https://img.shields.io/badge/python-3.8%2B-0a0a0c?style=flat-square" alt="Python 3.8+"></a>
-  <a href="scripts/citecheck.py"><img src="https://img.shields.io/badge/dependencies-0-0a0a0c?style=flat-square" alt="Zero dependencies"></a>
+  <a href="https://github.com/sunami-lab/citecheck/blob/main/scripts/citecheck.py"><img src="https://img.shields.io/badge/python-3.8%2B-0a0a0c?style=flat-square" alt="Python 3.8+"></a>
+  <a href="https://github.com/sunami-lab/citecheck/blob/main/scripts/citecheck.py"><img src="https://img.shields.io/badge/dependencies-0-0a0a0c?style=flat-square" alt="Zero dependencies"></a>
   <a href="#does-it-work"><img src="https://img.shields.io/badge/HALLMARK_F1-0.967-3ecf8e?style=flat-square" alt="HALLMARK test F1 0.967"></a>
 </p>
 
@@ -109,11 +109,11 @@ For PDF, Word or pasted reference lists, Claude first extracts the references an
 ### Command line
 
 ```bash
-pip install git+https://github.com/sunami-lab/citecheck.git
+pip install citecheck-refs
 citecheck path/to/paper/
 ```
 
-Or run the single file without installing: `git clone https://github.com/sunami-lab/citecheck.git`, then `python3 citecheck/scripts/citecheck.py path/to/paper/`. Either way it needs Python 3.8+ and nothing else.
+The package is `citecheck-refs`; `citecheck` on PyPI is an unrelated project. Or run the single file without installing: `git clone https://github.com/sunami-lab/citecheck.git`, then `python3 citecheck/scripts/citecheck.py path/to/paper/`. Either way it needs Python 3.8+ and nothing else.
 
 **Writing in Word?** Export your library from EndNote, Zotero or Mendeley as RIS (or EndNote XML) and run `citecheck library.ris`. Every reference in the file is checked.
 
@@ -121,7 +121,7 @@ Or run the single file without installing: `git clone https://github.com/sunami-
 
 The free APIs are rationed, so do these once:
 
-- **`python3 scripts/citecheck.py --build-dblp`.** This downloads dblp's monthly release (1.1 GB) and indexes its 8.5 million computer-science records into a local SQLite file (about 7 minutes, 2.2 GB). After that, most machine-learning references are checked offline in milliseconds.
+- **`citecheck --build-dblp`** (from a clone, `python3 scripts/citecheck.py --build-dblp`). This downloads dblp's monthly release (1.1 GB) and indexes its 8.5 million computer-science records into a local SQLite file (about 7 minutes, 2.2 GB). After that, most machine-learning references are checked offline in milliseconds.
 - **A free [Semantic Scholar key](https://www.semanticscholar.org/product/api#api-key) as `S2_API_KEY`.** Anonymous requests are often refused with HTTP 429.
 - **A free [OpenAlex key](https://openalex.org/) as `OPENALEX_API_KEY`.** Without one, OpenAlex allows about 100 searches a day; with one, 1,000.
 
@@ -139,7 +139,7 @@ Without these steps citecheck still works through Crossref, arXiv and doi.org. I
 
 MISMATCH and NOT_FOUND are the errors that get papers desk-rejected. CHECK items are worth fixing before camera-ready.
 
-**Exit status:** 0 if the bibliography is clean, 1 if any MISMATCH or NOT_FOUND, 3 if some references couldn't be checked, 2 for a usage error. This lets it gate CI or a pre-commit hook.
+**Exit status:** 0 if nothing was flagged (CHECK items may still need a look), 1 if any MISMATCH or NOT_FOUND, 3 if some references couldn't be checked (ERROR, or an entry that couldn't be parsed), 2 for unusable input (a missing or unsupported file, no references, or nothing cited). This lets it gate CI or a pre-commit hook.
 
 ## How it checks
 
@@ -171,7 +171,7 @@ MISMATCH and NOT_FOUND are the errors that get papers desk-rejected. CHECK items
 | `S2_API_KEY`, `OPENALEX_API_KEY` | free API keys (see [setup](#one-time-setup-recommended)) |
 | `CITECHECK_MAILTO` | an email address for the Crossref and OpenAlex polite pools |
 
-Input can also be JSON: `[{"key", "title", "authors": [...], "year", "venue", "doi", "arxiv", "url"}]`.
+Input can also be JSON: `[{"key", "title", "authors": [...], "year", "venue", "doi", "arxiv", "url"}]`, with each author as "First Last" or "Last, First". References from RIS and EndNote files get keys like `lecun2015deep`.
 
 ## Does it work?
 

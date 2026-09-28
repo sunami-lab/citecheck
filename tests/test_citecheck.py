@@ -3,8 +3,11 @@ Sources are replaced with fakes, so nothing here touches the network.
 
     python3 -m unittest discover tests
 """
+import io
 import os
+import ssl
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -210,17 +213,22 @@ class ReferenceManagerTests(unittest.TestCase):
         fields, errors = cc.parse_ris(RIS)
         self.assertEqual(errors, [])
         a, b = [cc.to_entry(f) for f in fields]
-        self.assertEqual((a["key"], a["type"], a["year"], a["venue"]), ("7", "article", 2020, "Adv Neural Inf Process Syst"))
+        self.assertEqual((a["key"], a["type"], a["year"], a["venue"]), ("ho2020denoising", "article", 2020, "Adv Neural Inf Process Syst"))
         self.assertEqual(a["authors"], ["Ho, Jonathan", "Jain, Ajay"])
         self.assertEqual(a["doi"], "10.5555/3495724.3496298")
         self.assertEqual((b["type"], b["title"], b["year"], b["venue"]), ("book", "Deep Learning", 2016, ""))
         self.assertEqual(b["url"], "https://www.deeplearningbook.org")
 
+    def test_ris_keys_are_readable_and_unique(self):
+        fields, _ = cc.parse_ris(RIS + RIS)
+        self.assertEqual([f["key"] for f in fields],
+                         ["ho2020denoising", "goodfellow2016deep", "ho2020denoisingb", "goodfellow2016deepb"])
+
     def test_endnote_xml(self):
         fields, errors = cc.parse_endnote_xml(ENDNOTE)
         e = cc.to_entry(fields[0])
         self.assertEqual((e["key"], e["type"], e["title"], e["year"], e["venue"], e["doi"]),
-                         ("rec12", "article", "Deep learning", 2015, "Nature", "10.1038/nature14539"))
+                         ("lecun2015deep", "article", "Deep learning", 2015, "Nature", "10.1038/nature14539"))
         self.assertEqual(e["authors"], ["LeCun, Yann", "Bengio, Yoshua"])
 
     def test_load_by_extension(self):
@@ -232,6 +240,74 @@ class ReferenceManagerTests(unittest.TestCase):
                     fh.write(text)
                 entries, _ = cc.load_entries(path)
                 self.assertTrue(entries and entries[0]["title"])
+
+
+class CommandLineTests(unittest.TestCase):
+    def run_main(self, *argv):
+        err = io.StringIO()
+        with mock.patch.object(sys, "stderr", err), mock.patch.object(sys, "stdout", io.StringIO()):
+            code = cc.main(list(argv))
+        return code, err.getvalue()
+
+    def test_unreadable_input_is_an_error_not_a_clean_bill(self):
+        with tempfile.TemporaryDirectory() as d:
+            cases = {"paper.pdf": "%PDF-1.4", "refs.txt": "Smith J. A paper. 2020.", "empty.bib": "",
+                     "one.json": '{"title": "A paper"}', "bad.json": '[{"title": }]'}
+            for name, text in cases.items():
+                path = os.path.join(d, name)
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                code, err = self.run_main(path)
+                self.assertEqual(code, 2, name)
+                self.assertIn(name, err)
+
+    def test_nothing_cited_is_an_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write("@article{a, title={A}, author={B, C}, year={2020}}")
+            with open(os.path.join(d, "main.tex"), "w", encoding="utf-8") as fh:
+                fh.write("No citations here.")
+            code, err = self.run_main(d)
+            self.assertEqual(code, 2)
+            self.assertIn("--all", err)
+
+    def test_bibliography_after_cited_in_is_the_input(self):
+        self.assertEqual(cc.split_inputs([], ["main.tex", "refs.bib", "sec/"]), (["refs.bib"], ["main.tex", "sec/"]))
+        self.assertEqual(cc.split_inputs(["refs.bib"], ["main.tex"]), (["refs.bib"], ["main.tex"]))
+
+    def test_output_folders_are_created(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "new", "deeper", "report.json")
+            cc.prepare_outputs([out, None])
+            self.assertTrue(os.path.isdir(os.path.dirname(out)))
+
+    def test_exit_status(self):
+        self.assertEqual(cc.exit_status(["VERIFIED", "CHECK"], unparsed=0), 0)
+        self.assertEqual(cc.exit_status(["VERIFIED"], unparsed=1), 3)
+        self.assertEqual(cc.exit_status(["ERROR"], unparsed=0), 3)
+        self.assertEqual(cc.exit_status(["MISMATCH", "ERROR"], unparsed=1), 1)
+
+    def test_help_explains_verdicts_exit_codes_and_keys(self):
+        out = io.StringIO()
+        with mock.patch.object(sys, "stdout", out), self.assertRaises(SystemExit):
+            cc.main(["--help"])
+        for word in ("VERIFIED", "NOT_FOUND", "exit status", "S2_API_KEY", "OPENALEX_API_KEY", ".cache/citecheck"):
+            self.assertIn(word, out.getvalue())
+
+
+class HintTests(unittest.TestCase):
+    def test_certificate_failure_is_named(self):
+        """macOS Python from python.org ships without CA certificates: say so instead of blaming the network."""
+        http = cc.Http()
+        err = cc.urllib.error.URLError(ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"))
+        with mock.patch.object(cc.urllib.request, "urlopen", side_effect=err), mock.patch.object(cc.time, "sleep"):
+            self.assertEqual(http.get("https://api.crossref.org/works?query=x")[0], 0)
+        self.assertTrue(http.cert_error)
+        results = [{"notes": ["Crossref unavailable (Crossref HTTP unreachable)"]}]
+        checker = mock.Mock(http=http, disabled=set())
+        self.assertIn("certificate", cc.hints(results, checker)[0])
+        http.cert_error = False
+        self.assertIn("network connection", cc.hints(results, checker)[0])
 
 
 class NameTests(unittest.TestCase):
@@ -281,6 +357,14 @@ class VerdictTests(unittest.TestCase):
     def test_fabricated_title_not_found(self):
         r = self.run_check(entry(title="Recursive Transformers for Quantum Protein Folding"))
         self.assertEqual(r["verdict"], "NOT_FOUND")
+
+    def test_collaboration_author_is_not_a_truncated_list(self):
+        rec = cc._record("Crossref", "Observation of Gravitational Waves from a Binary Black Hole Merger",
+                         [f"Author {i}" for i in range(1000)], 2016, "Physical Review Letters")
+        e = entry(title="Observation of Gravitational Waves from a Binary Black Hole Merger",
+                  authors=["{LIGO Scientific Collaboration and Virgo Collaboration}"], year=2016)
+        r = self.run_check(e, crossref=[rec])
+        self.assertEqual(r["verdict"], "VERIFIED", r["issues"])
 
     def test_chimeric_authors_mismatch(self):
         r = self.run_check(entry(authors=["Smith, John", "Doe, Jane"]), s2=[REAL])  # chimeric

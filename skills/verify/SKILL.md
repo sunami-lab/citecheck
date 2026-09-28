@@ -24,7 +24,7 @@ Target: `$ARGUMENTS` (if empty, the current project).
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/citecheck.py <directory|file.bib|refs.json|refs.ris|paper.zip> --json ${CLAUDE_PLUGIN_DATA}/report.json
 ```
 
-Give the Bash call a 10-minute timeout: rate limits make it take up to a few seconds per reference. Lookups are cached for 7 days, so a rerun after fixes is fast. Exit status 1 means at least one entry is NOT_FOUND or MISMATCH; 3 means some entries could not be checked (ERROR).
+Give the Bash call a 10-minute timeout: rate limits make it take up to a few seconds per reference. Lookups are cached for 7 days, so a rerun after fixes is fast. Exit status 1 means at least one entry is NOT_FOUND or MISMATCH; 3 means some entries could not be checked (ERROR, or an entry that could not be parsed); 2 means the input was unusable, and the message says why.
 
 | Verdict | Meaning |
 |---|---|
