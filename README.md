@@ -3,7 +3,7 @@
 > Catches hallucinated references before your reviewers do.
 
 <p align="center">
-  <img src="assets/banner.png" alt="citecheck checking five references: two verified, one fabricated paper not found, one real title with the wrong authors, one wrong year" width="900">
+  <img src="https://raw.githubusercontent.com/sunami-lab/citecheck/main/assets/banner.png" alt="citecheck checking five references: two verified, one fabricated paper not found, one real title with the wrong authors, one wrong year" width="900">
 </p>
 
 <p align="center">
@@ -22,7 +22,7 @@ $ python3 scripts/citecheck.py examples/
 [3/5] NOT_FOUND zhang2024retrieval
 [4/5] MISMATCH  song2020denoising
 [5/5] CHECK     kingma2011adam
-citecheck 0.4.0: 5 references in examples/
+citecheck 0.4.1: 5 references in examples/
   NOT_FOUND 1   MISMATCH 1   CHECK 1   VERIFIED 2
   checking the 5 entries cited in the sources (--all checks every entry)
   warning: the same work is cited under several keys: ho2020denoising, song2020denoising
@@ -49,7 +49,7 @@ CHECK      kingma2011adam  "Adam: A Method for Stochastic Optimization"
 
 ## Example
 
-You ask a language model to tighten the related-work paragraph of your draft ([`examples/paper.tex`](examples/paper.tex)). The result compiles and reads well:
+You ask a language model to tighten the related-work paragraph of your draft ([`examples/paper.tex`](https://github.com/sunami-lab/citecheck/blob/main/examples/paper.tex)). The result compiles and reads well:
 
 > Attention-only architectures (Vaswani et al., 2017) and denoising diffusion (Ho et al., 2020) are now standard building blocks. Retrieval-augmented diffusion transformers extend both to long-horizon planning (Zhang and Kumar, 2024), and the denoising objective has been analysed through score matching (Song and Ermon, 2020). We train all models with Adam (Kingma and Ba, 2011).
 
@@ -81,7 +81,7 @@ It doesn't edit anything until you say so. It also won't swap a fabricated refer
 
 ## Claims check
 
-A reference can exist and still be the wrong one for its sentence. `/citecheck:claims` pairs every citing sentence with the cited paper's abstract. Claude then labels each pair against a [written rubric](skills/claims/rubric.md) as supported, plausible, unsupported, contradicted, or unchecked. Before reporting an unsupported or contradicted pair, it opens the paper's full text.
+A reference can exist and still be the wrong one for its sentence. `/citecheck:claims` pairs every citing sentence with the cited paper's abstract. Claude then labels each pair against a [written rubric](https://github.com/sunami-lab/citecheck/blob/main/skills/claims/rubric.md) as supported, plausible, unsupported, contradicted, or unchecked. Before reporting an unsupported or contradicted pair, it opens the paper's full text.
 
 The script collects the pairs:
 
@@ -227,7 +227,7 @@ The eighth is a genuine false alarm: dblp lacks the ICML version of that paper.
 
 Swaps that got through usually made a claim that the substitute paper also supports.
 
-Run the offline tests with `python3 -m unittest discover tests`. The benchmark harnesses are [`bench/hallmark.py`](bench/hallmark.py) and [`bench/claims.py`](bench/claims.py).
+Run the offline tests with `python3 -m unittest discover tests`. The benchmark harnesses are [`bench/hallmark.py`](https://github.com/sunami-lab/citecheck/blob/main/bench/hallmark.py) and [`bench/claims.py`](https://github.com/sunami-lab/citecheck/blob/main/bench/claims.py).
 
 ## Limitations
 
@@ -246,3 +246,7 @@ Two things stand in the way:
 
 - **Access is rationed.** The live APIs are being throttled, partly because of agent traffic. dblp's API now sits behind a bot challenge, OpenAlex bills its searches, and Semantic Scholar refuses anonymous bursts. So citecheck can keep a local copy of dblp: for computer science, the "file of every reference" is a 7-minute download.
 - **Checking is a matching problem, not a lookup.** A fake reference borrows real authors and a nearly right title. A real one varies between its preprint and published versions, spells names several ways, and shares its title with other papers. Most of citecheck is the rules for telling those two cases apart.
+
+## License
+
+MIT. See [LICENSE](https://github.com/sunami-lab/citecheck/blob/main/LICENSE).

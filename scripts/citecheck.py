@@ -45,7 +45,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 TITLE_SAME = 0.95  # title similarity at or above this: same title
 TITLE_NEAR = 0.85  # at or above this: same work, reworded or mistyped title
