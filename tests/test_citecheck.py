@@ -114,6 +114,8 @@ class TextTests(unittest.TestCase):
         self.assertEqual(cc.split_names("van der BERG, J. W."), ["van der BERG, J. W."])
         self.assertEqual(cc.split_names("DE LUCA, Maria G. and Smith, J."), ["DE LUCA, Maria G.", "Smith, J."])
         self.assertEqual(cc.split_names("de Winter JCF, SMITH J"), ["de Winter JCF", "SMITH J"])
+        for field in ("van der Maaten L, Du J", "de Winter JCF, Le Q", "van Dam H, Di M"):
+            self.assertEqual(len(cc.split_names(field)), 2, field)
         self.assertEqual(cc.author_overlap(["Guo, Daya", "Yang, Dejian"], ["DeepSeek-AI"]), (None, []))
         self.assertEqual(cc.author_overlap(["{OpenCitations}"], ["Chiara Di Giambattista"]), (None, []))
 

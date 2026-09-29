@@ -194,11 +194,11 @@ def _vancouver_piece(piece: str) -> bool:
     """'Winter JCFW' or 'SMITH J': a family name, not a particle ('DE LUCA', 'van der BERG'), then initials.
     Four capitals count as initials only after a mixed-case name."""
     words = piece.split()
-    if len(words) < 2 or words[-2].lower() in _PARTICLES:
+    if len(words) < 2 or not re.fullmatch(r"(?:[A-Z]\.?-?){1,4}", words[-1]):
         return False
-    initials = re.fullmatch(r"(?:[A-Z]\.?-?){1,4}", words[-1])
-    letters = sum(c.isalpha() for c in words[-1])
-    return bool(initials) and (letters <= 3 or any(c.islower() for c in words[-2]))
+    if sum(c.isalpha() for c in words[-1]) <= 3:  # "Happee R", "Du J", "SMITH J"
+        return True
+    return words[-2].lower() not in _PARTICLES and any(c.islower() for c in words[-2])
 
 
 def split_names(field: str) -> list:
