@@ -216,7 +216,7 @@ def split_names(field: str) -> list:
         particle = first in _PARTICLES or first.lower() in _CASED_PARTICLES or (
             first.lower() in _PARTICLES and last_first_field)
         last_first = (len(filled) == 2 and particle
-                      and not _INITIALS.fullmatch(filled[0].split()[-1]))  # "de Winter, Joost CF" is one name
+                      and not re.fullmatch(r"(?:[A-Z]\.?-?){1,4}", filled[0].split()[-1]))  # "de Winter, Joost CF"
         if "{" not in n and len(filled) >= 2 and all(len(p.split()) >= 2 for p in filled) and not last_first:
             split += filled
         else:
@@ -454,6 +454,7 @@ def parse_bibtex(text: str):
             entries.append(fields)
         except (ValueError, IndexError, AttributeError) as err:
             line = text.count("\n", 0, m.start()) + 1
+            key = key or (re.match(r"\s*([^\s,{}()]+)", text[m.end():]) or [""])[0].strip()
             error = ParseError(f"line {line}: could not parse @{kind} entry{' ' + key if key else ''} "
                                f"({err or 'truncated'})")
             error.key = key
@@ -537,12 +538,22 @@ _ENDNOTE_TYPES = {"journal article": "article", "electronic article": "article",
                   "electronic book": "book", "government document": "techreport"}
 
 
+def _manager_author(name: str) -> str:
+    """One author from a reference manager, as BibTeX. EndNote marks a corporate author with a trailing comma
+    ("World Health Organization,"); an organisation whose name contains "and" is braced so it stays one."""
+    name = name.strip()
+    if name.endswith(","):
+        return "{" + name.rstrip(", ") + "}"
+    if re.search(r"\band\b", name, re.I) and "," not in name:
+        return "{" + name + "}"
+    return name
+
+
 def _reference_fields(i, typ, key, title, authors, year, container, doi, url, note=""):
     """Fields of a reference-manager record, named as in BibTeX."""
     f = {"key": key or f"ref{i}", "type": typ, "title": title, "year": year, "doi": doi, "url": url,
          "annote": note,  # free text: never searched for a DOI or arXiv ID
-         "author": " and ".join(f"{{{a}}}" if re.search(r"\band\b", a, re.I) and "," not in a else a
-                                for a in authors)}
+         "author": " and ".join(_manager_author(a) for a in authors)}
     f["journal" if typ == "article" else "booktitle"] = container
     return f
 
@@ -620,10 +631,7 @@ def parse_endnote_xml(text: str):
     return _readable_keys(fields), ([] if fields else ["no EndNote records found"])
 
 
-_BIBTEX_ENTRY = re.compile(r"^\s*@(article|book|booklet|conference|inbook|incollection|inproceedings|manual|"
-                           r"mastersthesis|misc|phdthesis|proceedings|techreport|unpublished|online|electronic|www|"
-                           r"software|dataset|thesis|report|patent|standard|collection|string|preamble)\s*[{(]",
-                           re.I | re.M)
+_BIBTEX_ENTRY = re.compile(r"^[ \t]*@[A-Za-z]+[ \t]*[{(][ \t]*[^\s,=(){}\"]+[ \t]*,", re.M)  # "@mvbook{key,"
 
 
 def load_entries(path: str):
@@ -785,7 +793,7 @@ class InputError(Exception):
 def collect_inputs(paths: list, tmpdir: str):
     """Resolve .bib/.json files, paper directories and .zip archives (e.g. an Overleaf download)
     into (bibliography files, directories whose sources decide which keys are cited)."""
-    bibs, roots = [], []
+    bibs, roots, real = [], [], set()
     for p in paths:
         if not os.path.exists(p):
             raise InputError(f"no such file or directory: {p}")
@@ -798,10 +806,13 @@ def collect_inputs(paths: list, tmpdir: str):
             found = _walk(p, (".bib",))
             if not found:
                 raise InputError(f"no .bib files in {p}")
-            bibs += found
             roots.append(p)
         else:
-            bibs.append(p)
+            found = [p]
+        for f in found:  # a file given twice, or also found in a given folder, is read once
+            if os.path.realpath(f) not in real:
+                bibs.append(f)
+                real.add(os.path.realpath(f))
     return bibs, roots
 
 
@@ -1669,6 +1680,7 @@ def main(argv=None):
         except (InputError, OSError, ValueError, zipfile.BadZipFile) as err:
             print(f"citecheck: {err}", file=sys.stderr)
             return 2
+    unparsed_keys -= seen  # a key that parsed in another file was checked
     unparsed = len(unparsed_keys)
     if "*" not in cited:
         broken = sorted(cited & unparsed_keys)

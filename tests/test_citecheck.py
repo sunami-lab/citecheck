@@ -108,6 +108,7 @@ class TextTests(unittest.TestCase):
         for field in ("Le Song, Alex Smola", "Di He, Tie-Yan Liu", "Du Tran, Lubomir Bourdev"):
             self.assertEqual(len(cc.split_names(field)), 2, field)
         self.assertEqual(cc.split_names("De Winter, Joost CF"), ["De Winter, Joost CF"])
+        self.assertEqual(cc.split_names("de Winter JCFW, Happee R"), ["de Winter JCFW", "Happee R"])
         self.assertEqual(cc.author_overlap(["Guo, Daya", "Yang, Dejian"], ["DeepSeek-AI"]), (None, []))
         self.assertEqual(cc.author_overlap(["{OpenCitations}"], ["Chiara Di Giambattista"]), (None, []))
 
@@ -268,6 +269,20 @@ class ReferenceManagerTests(unittest.TestCase):
             (e,), _ = cc.load_entries(path)
             self.assertEqual((e["authors"], e["year"]), (["Smith, J"], 2020))
 
+    def test_endnote_corporate_author_with_trailing_comma(self):
+        ris = ("TY  - RPRT\nAU  - World Health Organization,\nTI  - A report\nER  - \n"
+               "TY  - RPRT\nAU  - Department of Health and Human Services,\nTI  - Another report\nER  - \n")
+        a, b = [cc.to_entry(f) for f in cc.parse_ris(ris)[0]]
+        self.assertEqual(a["authors"], ["{World Health Organization}"])
+        self.assertEqual(b["authors"], ["{Department of Health and Human Services}"])
+
+    def test_bibtex_sniffing_accepts_biblatex_types(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "export")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("% exported\n\n@mvbook{k, title={A}, author={B, C}, year={2020}}\n")
+            self.assertEqual(len(cc.load_entries(path)[0]), 1)
+
     def test_endnote_xml(self):
         fields, errors = cc.parse_endnote_xml(ENDNOTE)
         e = cc.to_entry(fields[0])
@@ -384,6 +399,29 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual(code, 3)
             self.assertIn("could not be parsed: bad", out)
             self.assertNotIn("not in the bibliography: bad", out)
+
+    def test_truncated_entry_keeps_its_key(self):
+        _, errors = cc.parse_bibtex("@article{good, title={A}}\n@article{bad")
+        self.assertEqual([e.key for e in errors], ["bad"])
+
+    def test_key_parsed_in_another_file_or_given_twice(self):
+        with tempfile.TemporaryDirectory() as d:
+            a, b = os.path.join(d, "a.bib"), os.path.join(d, "b.bib")
+            with open(a, "w", encoding="utf-8") as fh:
+                fh.write("@article{x, title={A}, author={B, C}, year={2020}}")
+            with open(b, "w", encoding="utf-8") as fh:
+                fh.write("@article{x, title={A\n")
+            tex = os.path.join(d, "main.tex")
+            with open(tex, "w", encoding="utf-8") as fh:
+                fh.write("\\cite{x}")
+            with self.fake_checker() as checker:
+                self.assertEqual(self.run_main(a, b, "--cited-in", tex)[0], 0)
+                checker.return_value.check.reset_mock()
+                self.run_main(a, a)
+                self.assertEqual(checker.return_value.check.call_count, 1)
+                checker.return_value.check.reset_mock()
+                self.run_main(d, a, "--all")  # a.bib is also inside the folder
+                self.assertEqual(checker.return_value.check.call_count, 1)
 
     def test_output_path_that_is_a_folder_is_an_error(self):
         with tempfile.TemporaryDirectory() as d:
