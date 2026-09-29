@@ -208,8 +208,9 @@ def split_names(field: str) -> list:
     for n in names:  # "Franz Aichberger, Lily Chen, and John Smith": full names separated by commas
         pieces = [p.strip() for p in n.split(",")]
         filled = [p for p in pieces if p]
-        if ("{" not in n and len(filled) >= 2 and all(len(p.split()) >= 2 for p in filled)
-                and filled[0].split()[0] not in _PARTICLES):  # "de Winter, Joost CF" is one name
+        last_first = (len(filled) == 2 and filled[0].split()[0].lower() in _PARTICLES
+                      and not _INITIALS.fullmatch(filled[0].split()[-1]))  # "de Winter, Joost CF" is one name
+        if "{" not in n and len(filled) >= 2 and all(len(p.split()) >= 2 for p in filled) and not last_first:
             split += filled
         else:
             split.append(n)
@@ -258,6 +259,14 @@ def is_org(raw: str) -> bool:
     if len(name.split()) == 1:
         return norm(name) in _KNOWN_ORGS or bool(re.search(r"[a-z][A-Z]|^[A-Z]{3,}$|-AI$", name))
     return bool(_ORG.search(name))
+
+
+def _named_org(raw: str) -> bool:
+    """Clearly an organisation, never a bare surname ("LeCun"): a braced name of two or more words, an
+    organisation keyword ("Collaboration", "Institute") or a known organisation ("OpenAI")."""
+    name = detex(raw).strip()
+    braced = raw.strip().startswith("{") and len(name.split()) >= 2
+    return braced or bool(_ORG.search(name)) or norm(name) in _KNOWN_ORGS
 
 
 def author_overlap(cited: list, record: list):
@@ -488,6 +497,7 @@ def to_entry(f: dict) -> dict:
         "venue_text": detex(" ".join(f.get(k, "") for k in ("journal", "booktitle", "howpublished", "institution",
                                                              "school", "note", "type"))),
         "etal": bool(re.search(r"\band\s+others\b|\bet\.?\s+al\b", f.get("author", ""), re.I)),
+        "generated": bool(f.get("generated")),  # key made up by citecheck (RIS, EndNote)
     }
 
 
@@ -497,31 +507,43 @@ _RIS_LINE = re.compile(r"^([A-Z][A-Z0-9])\s{1,2}-\s?(.*)$")
 _RIS_TYPES = {"JOUR": "article", "JFULL": "article", "EJOUR": "article", "MGZN": "article", "NEWS": "article",
               "CONF": "inproceedings", "CPAPER": "inproceedings", "BOOK": "book", "EBOOK": "book", "EDBOOK": "book",
               "CHAP": "incollection", "ECHAP": "incollection", "THES": "phdthesis", "RPRT": "techreport",
-              "COMP": "software", "UNPB": "unpublished"}
+              "COMP": "software", "UNPB": "unpublished", "MANSCPT": "unpublished", "PAT": "patent", "ELEC": "online",
+              "BLOG": "online", "DATA": "dataset", "STAND": "standard", "GOVDOC": "techreport", "GEN": "misc"}
 _ENDNOTE_TYPES = {"journal article": "article", "electronic article": "article", "magazine article": "article",
                   "conference proceedings": "inproceedings", "conference paper": "inproceedings", "book": "book",
                   "edited book": "book", "book section": "incollection", "thesis": "phdthesis", "report": "techreport",
-                  "computer program": "software"}
+                  "computer program": "software", "unpublished work": "unpublished", "manuscript": "unpublished",
+                  "patent": "patent", "web page": "online", "dataset": "dataset", "standard": "standard",
+                  "electronic book": "book", "government document": "techreport"}
 
 
 def _reference_fields(i, typ, key, title, authors, year, container, doi, url, note=""):
     """Fields of a reference-manager record, named as in BibTeX."""
-    f = {"key": key or f"ref{i}", "type": typ, "title": title, "author": " and ".join(authors), "year": year,
-         "doi": doi, "url": url, "note": note}
+    f = {"key": key or f"ref{i}", "type": typ, "title": title, "year": year, "doi": doi, "url": url,
+         "annote": note,  # free text: never searched for a DOI or arXiv ID
+         "author": " and ".join(f"{{{a}}}" if re.search(r"\band\b", a, re.I) else a for a in authors)}
     f["journal" if typ == "article" else "booktitle"] = container
     return f
 
 
+def _free_key(base: str, taken) -> str:
+    """base, or base with the first free suffix: b, c, ... as BibTeX tools do for the same author and year."""
+    for suffix in [""] + list("bcdefghijklmnopqrstuvwxyz"):
+        if base + suffix not in taken:
+            return base + suffix
+    return next(base + str(n) for n in range(2, len(taken) + 3) if base + str(n) not in taken)
+
+
 def _readable_keys(fields: list) -> list:
     """Keys like 'lecun2015deep' for reference-manager exports, whose record numbers mean nothing in a report."""
-    used = Counter()
+    taken = set()
     for f in fields:
         authors = split_names(f["author"])
         word = next((w for w in norm(f["title"]).split() if w not in _STOP), "")
         base = (family_name(authors[0]).replace(" ", "") if authors else "") + str(_year(f["year"]) or "") + word
-        base = base or f["key"]
-        used[base] += 1
-        f["key"] = base if used[base] == 1 else base + "bcdefghijklmnopqrstuvwxyz"[min(used[base] - 2, 24)]
+        f["key"] = _free_key(base or f["key"], taken)
+        f["generated"] = True
+        taken.add(f["key"])
     return fields
 
 
@@ -534,6 +556,8 @@ def parse_ris(text: str):
             continue
         tag, value = m.group(1), m.group(2).strip()
         if tag == "TY":
+            if cur:  # the previous record had no ER
+                records.append(cur)
             cur = {"TY": [value]}
         elif tag == "ER":
             if cur:
@@ -541,6 +565,8 @@ def parse_ris(text: str):
             cur = None
         elif cur is not None:
             cur.setdefault(tag, []).append(value)
+    if cur:
+        records.append(cur)
     first = lambda r, *tags: next((r[t][0] for t in tags if r.get(t)), "")  # noqa: E731
     fields = []
     for i, r in enumerate(records, 1):
@@ -573,21 +599,26 @@ def parse_endnote_xml(text: str):
 
 
 def load_entries(path: str):
-    with open(path, encoding="utf-8", errors="replace") as fh:
+    with open(path, encoding="utf-8-sig", errors="replace") as fh:
         text = fh.read()
     lower = path.lower()
-    if lower.endswith(".ris") or (lower.endswith(".txt") and re.match(r"\s*\ufeff?TY\s{1,2}-", text)):
+    if lower.endswith(".ris") or (lower.endswith(".txt") and re.match(r"\s*TY\s{1,2}-", text)):
         fields, errors = parse_ris(text)
         return [to_entry(f) for f in fields], errors
     if lower.endswith(".xml"):
         fields, errors = parse_endnote_xml(text)
         return [to_entry(f) for f in fields], errors
-    if lower.endswith((".bib", ".bibtex")):
+    if lower.endswith(".json"):
+        return json_entries(path, text), []
+    if lower.endswith((".bib", ".bibtex")) or re.search(r"@[A-Za-z]+\s*[{(]", text):  # also /dev/stdin, refs.txt
         fields, errors = parse_bibtex(text)
         return [to_entry(f) for f in fields], errors
-    if not lower.endswith(".json"):
-        raise InputError(f"{path}: unsupported file type. Give a .bib, .json, .ris or EndNote .xml file, a paper "
-                         "folder or an Overleaf .zip; for a PDF or Word document, export or extract the references first")
+    raise InputError(f"{path}: unsupported file type. Give a .bib, .json, .ris or EndNote .xml file, a paper "
+                     "folder or an Overleaf .zip; for a PDF or Word document, export or extract the references first")
+
+
+def json_entries(path: str, text: str) -> list:
+    """citecheck's JSON format: a list of {"key", "title", "authors": [...], "year", "venue", "doi", "arxiv", "url"}."""
     try:
         data = json.loads(text)
     except ValueError as err:
@@ -598,13 +629,22 @@ def load_entries(path: str):
         raise InputError(f'{path}: expected a JSON list of references, or an object with a "references" list')
     entries = []
     for i, d in enumerate(data, 1):
+        if not isinstance(d, dict):
+            raise InputError(f"{path}: reference {i} is not an object with a title and authors")
+        if "authors" not in d and ("author" in d or "issued" in d):
+            raise InputError(f"{path}: this looks like CSL-JSON (Zotero's JSON export), which citecheck does not "
+                             "read; export RIS or BibTeX instead")
         authors = d.get("authors") or []
-        f = {"key": str(d.get("key") or f"ref{i}"), "type": "json", "title": d.get("title") or "",
+        text_fields = all(d.get(k) is None or isinstance(d[k], (str, int)) for k in
+                          ("key", "title", "year", "venue", "doi", "arxiv", "url"))
+        if not text_fields or not (isinstance(authors, str) or all(isinstance(a, str) for a in authors)):
+            raise InputError(f'{path}: reference {i}: fields must be text, and "authors" a list of names')
+        f = {"key": str(d.get("key") or f"ref{i}"), "type": "json", "title": str(d.get("title") or ""),
              "author": authors if isinstance(authors, str) else " and ".join(authors),
-             "year": str(d.get("year") or ""), "doi": d.get("doi") or "", "eprint": d.get("arxiv") or "",
-             "url": d.get("url") or "", "journal": d.get("venue") or ""}
+             "year": str(d.get("year") or ""), "doi": str(d.get("doi") or ""), "eprint": str(d.get("arxiv") or ""),
+             "url": str(d.get("url") or ""), "journal": str(d.get("venue") or "")}
         entries.append(to_entry(f))
-    return entries, []
+    return entries
 
 
 _CITE = re.compile(r"\\(?:[A-Za-z]*cite[A-Za-z]*|nocite)\*?\s*(?:\[[^\]]*\]\s*){0,2}\{([^}]*)\}")
@@ -1268,7 +1308,7 @@ class Checker:
                                 for a, b in best["title_diff"][:3])
             issues.append(f'title differs from the record{f" ({changed})" if changed else ""}: "{rec["title"]}"')
         if (e["authors"] and not e["etal"] and len(rec["authors"]) > len(e["authors"])
-                and not all(is_org(a) for a in e["authors"])):
+                and not all(_named_org(a) for a in e["authors"])):
             issues.append(f"cites {len(e['authors'])} of the record's {len(rec['authors'])} authors, without 'and others'")
         if best["missing_authors"]:
             issues.append(f"cited author(s) not on the record: {'; '.join(best['missing_authors'])}")
@@ -1503,6 +1543,8 @@ def split_inputs(inputs: list, cited_in):
 def prepare_outputs(paths: list):
     """Create the folders of the output files before the run, so a long run cannot fail at the end."""
     for p in paths:
+        if p and os.path.isdir(p):
+            raise InputError(f"{p} is a folder; give a file name for the output")
         if p:
             os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
 
@@ -1556,6 +1598,9 @@ def main(argv=None):
                 loaded, errors = load_entries(path)
                 extra += [f"  warning: {os.path.basename(path)}: {e}" for e in errors]
                 unparsed += len(errors)
+                for e in loaded:  # a key citecheck made up (RIS, EndNote) that another file already used
+                    if e["generated"] and e["key"] in seen:
+                        e["key"] = _free_key(e["key"], seen)
                 dupes = sorted({e["key"] for e in loaded if e["key"] in seen})
                 if dupes:
                     extra.append(f"  warning: duplicate keys (first one kept): {', '.join(dupes)}")
@@ -1624,7 +1669,8 @@ def main(argv=None):
         with open(args.json, "w", encoding="utf-8") as fh:
             json.dump({"version": __version__, "inputs": args.inputs, "duplicates": duplicates(results),
                        "results": results}, fh, indent=2, ensure_ascii=False)
-    return exit_status((r["verdict"] for r in results), unparsed)
+    # an entry that could not be parsed matters only when every entry is checked; otherwise its key is unknown
+    return exit_status((r["verdict"] for r in results), unparsed if "*" in cited else 0)
 
 
 if __name__ == "__main__":

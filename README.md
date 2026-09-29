@@ -171,7 +171,7 @@ MISMATCH and NOT_FOUND are the errors that get papers desk-rejected. CHECK items
 | `S2_API_KEY`, `OPENALEX_API_KEY` | free API keys (see [setup](#one-time-setup-recommended)) |
 | `CITECHECK_MAILTO` | an email address for the Crossref and OpenAlex polite pools |
 
-Input can also be JSON: `[{"key", "title", "authors": [...], "year", "venue", "doi", "arxiv", "url"}]`, with each author as "First Last" or "Last, First". References from RIS and EndNote files get keys like `lecun2015deep`.
+Input can also be JSON: `[{"key", "title", "authors": [...], "year", "venue", "doi", "arxiv", "url"}]`, with each author as "First Last" or "Last, First". CSL-JSON (Zotero's JSON export) is not read; export RIS or BibTeX instead. References from RIS and EndNote files get keys like `lecun2015deep`.
 
 ## Does it work?
 
@@ -233,7 +233,7 @@ Run the offline tests with `python3 -m unittest discover tests`. The benchmark h
 
 - **Only scholarly indexes.** Court rulings, standards, many books and web pages come back NOT_FOUND unless the entry has a URL (then CHECK). The Claude Code skill confirms these with a web search; the standalone script cannot.
 - **Venues are checked only for about 30 major computer-science and machine-learning venues.** Journals and smaller conferences are not compared. A journal-name comparison was tried for 0.4.0 and left out: on real bibliographies nearly all of its flags were abbreviations, renamed journals or reprint records.
-- **First names are compared by initial.** A changed author order passes, and a nickname ("Bill" for William) gets CHECK. A fabricated list full of common family names (Wang, Li, Zhang) can share enough of them with the real authors to get only CHECK.
+- **First names are compared by initial.** A changed author order passes, and a nickname or another spelling of a first name ("Bill" for William, "Iurii" for Yuri) gets CHECK. A fabricated list full of common family names (Wang, Li, Zhang) can share enough of them with the real authors to get only CHECK.
 - **New papers can lag.** A paper accepted this year may not be in the indexes yet, so a correct citation can get CHECK ("only a preprint version was found").
 - **Indexes make mistakes.** Semantic Scholar's GPT-1 record lists two of its four authors, so a correct citation of it gets CHECK.
 - **The claims check sees abstracts.** A claim made only deep in a paper's full text can be labelled plausible or unsupported. The skill opens the full text before it reports a flag, and a flag is a prompt to reread the paper, not a verdict.

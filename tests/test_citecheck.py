@@ -102,6 +102,8 @@ class TextTests(unittest.TestCase):
                          ["van der Maaten, Laurens", "Smith, John A."])
         self.assertEqual(cc.split_names("Happee, Riender and de Winter, Joost CF"),
                          ["Happee, Riender", "de Winter, Joost CF"])
+        self.assertEqual(cc.split_names("de Winter JCF, Happee R, Dodou D"), ["de Winter JCF", "Happee R", "Dodou D"])
+        self.assertEqual(cc.split_names("Da Silva, Ana Maria and Smith, John"), ["Da Silva, Ana Maria", "Smith, John"])
         self.assertEqual(cc.author_overlap(["Guo, Daya", "Yang, Dejian"], ["DeepSeek-AI"]), (None, []))
         self.assertEqual(cc.author_overlap(["{OpenCitations}"], ["Chiara Di Giambattista"]), (None, []))
 
@@ -224,6 +226,36 @@ class ReferenceManagerTests(unittest.TestCase):
         self.assertEqual([f["key"] for f in fields],
                          ["ho2020denoising", "goodfellow2016deep", "ho2020denoisingb", "goodfellow2016deepb"])
 
+    def test_ris_notes_are_not_identifiers(self):
+        ris = ("TY  - JOUR\nAU  - LeCun, Yann\nTI  - Deep learning\nPY  - 2015\nDO  - 10.1038/nature14539\n"
+               "N1  - Compare https://arxiv.org/abs/2005.14165\nER  - \n"
+               "TY  - CHAP\nAU  - Smith, J\nTI  - A chapter\nPY  - 2020\nN1  - see doi:10.1016/j.cell.2020.01.001\nER  - \n")
+        a, b = [cc.to_entry(f) for f in cc.parse_ris(ris)[0]]
+        self.assertEqual((a["doi"], a["arxiv"]), ("10.1038/nature14539", ""))
+        self.assertEqual(b["doi"], "")
+
+    def test_ris_types_organisations_and_missing_er(self):
+        ris = ("TY  - PAT\nAU  - Department of Health and Human Services\nTI  - A patent\nPY  - 2020\n"
+               "TY  - ELEC\nTI  - A web page\nPY  - 2021\nER  - \n"
+               "TY  - DATA\nTI  - A dataset\nPY  - 2022\n")
+        entries = [cc.to_entry(f) for f in cc.parse_ris(ris)[0]]
+        self.assertEqual([e["type"] for e in entries], ["patent", "online", "dataset"])
+        self.assertEqual(entries[0]["authors"], ["{Department of Health and Human Services}"])
+        self.assertEqual(cc._ENDNOTE_TYPES["unpublished work"], cc._RIS_TYPES["UNPB"])
+
+    def test_load_bom_bibtex_sniffing(self):
+        with tempfile.TemporaryDirectory() as d:
+            files = {"refs.json": "\ufeff[{\"title\": \"A paper\", \"authors\": [\"Smith, J\"]}]",
+                     "export.txt": "\ufeff\nTY  - JOUR\nTI  - A paper\nER  - \n",
+                     "refs": "@article{a, title={A}, author={B, C}, year={2020}}",
+                     "refs.txt": "@article{a, title={A}, author={B, C}, year={2020}}"}
+            for name, text in files.items():
+                path = os.path.join(d, name)
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                entries, _ = cc.load_entries(path)
+                self.assertEqual(len(entries), 1, name)
+
     def test_endnote_xml(self):
         fields, errors = cc.parse_endnote_xml(ENDNOTE)
         e = cc.to_entry(fields[0])
@@ -252,7 +284,11 @@ class CommandLineTests(unittest.TestCase):
     def test_unreadable_input_is_an_error_not_a_clean_bill(self):
         with tempfile.TemporaryDirectory() as d:
             cases = {"paper.pdf": "%PDF-1.4", "refs.txt": "Smith J. A paper. 2020.", "empty.bib": "",
-                     "one.json": '{"title": "A paper"}', "bad.json": '[{"title": }]'}
+                     "one.json": '{"title": "A paper"}', "bad.json": '[{"title": }]',
+                     "strings.json": '["Attention is all you need"]', "null.json": "[null]",
+                     "s2.json": '[{"title": "A paper", "authors": [{"name": "Ann Lee"}]}]',
+                     "numdoi.json": '[{"title": "A paper", "doi": 10.1038}]',
+                     "csl.json": '[{"title": "A paper", "author": [{"family": "Smith"}], "issued": {"date-parts": [[2011]]}}]'}
             for name, text in cases.items():
                 path = os.path.join(d, name)
                 with open(path, "w", encoding="utf-8") as fh:
@@ -270,6 +306,37 @@ class CommandLineTests(unittest.TestCase):
             code, err = self.run_main(d)
             self.assertEqual(code, 2)
             self.assertIn("--all", err)
+
+    def fake_checker(self):
+        fake = mock.Mock(disabled=set(), failures={})
+        fake.check.side_effect = lambda e: {"key": e["key"], "verdict": "VERIFIED", "issues": [], "notes": [], "match": None,
+                                            "cited": {k: e[k] for k in ("type", "title", "authors", "year", "doi", "arxiv", "url")}}
+        return mock.patch.object(cc, "Checker", return_value=fake)
+
+    def test_uncited_malformed_entry_does_not_change_exit_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write("@article{good, title={A}, author={B, C}, year={2020}}\n@article{bad, title={A\n")
+            with open(os.path.join(d, "main.tex"), "w", encoding="utf-8") as fh:
+                fh.write("\\cite{good}")
+            with self.fake_checker():
+                self.assertEqual(self.run_main(d)[0], 0)
+                self.assertEqual(self.run_main(d, "--all")[0], 3)
+
+    def test_generated_keys_unique_across_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name, title in (("ch1.ris", "Deep nets one"), ("ch2.ris", "Deep nets two")):
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    fh.write(f"TY  - JOUR\nAU  - Smith, J\nTI  - {title}\nPY  - 2020\nER  - \n")
+            with self.fake_checker():
+                code, err = self.run_main(os.path.join(d, "ch1.ris"), os.path.join(d, "ch2.ris"))
+            self.assertIn("smith2020deep\n", err)
+            self.assertIn("smith2020deepb\n", err)
+
+    def test_output_path_that_is_a_folder_is_an_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(cc.InputError):
+                cc.prepare_outputs([d])
 
     def test_bibliography_after_cited_in_is_the_input(self):
         self.assertEqual(cc.split_inputs([], ["main.tex", "refs.bib", "sec/"]), (["refs.bib"], ["main.tex", "sec/"]))
@@ -365,6 +432,14 @@ class VerdictTests(unittest.TestCase):
                   authors=["{LIGO Scientific Collaboration and Virgo Collaboration}"], year=2016)
         r = self.run_check(e, crossref=[rec])
         self.assertEqual(r["verdict"], "VERIFIED", r["issues"])
+
+    def test_bare_surname_is_not_an_organisation(self):
+        rec = cc._record("Crossref", "Deep learning", ["Yann LeCun", "Yoshua Bengio", "Geoffrey Hinton", "A B"], 2015)
+        for author in ("LeCun", "McDonald"):
+            r = self.run_check(entry(title="Deep learning", authors=[author], year=2015), crossref=[rec])
+            self.assertEqual(r["verdict"], "CHECK", author)
+        r = self.run_check(entry(title="Deep learning", authors=["OpenAI"], year=2015), crossref=[rec])
+        self.assertFalse(any("without 'and others'" in i for i in r["issues"]))
 
     def test_chimeric_authors_mismatch(self):
         r = self.run_check(entry(authors=["Smith, John", "Doe, Jane"]), s2=[REAL])  # chimeric
