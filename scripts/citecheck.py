@@ -327,7 +327,7 @@ def _initials(raw: str, family: set) -> set:
             continue
         if _INITIALS.fullmatch(w):  # "J.", "TJ", "J.-P."
             out |= {c.lower() for c in w if c.isalpha()}
-        elif w not in _PARTICLES:  # "van", "de" as written; "Le-Minh" is a given name
+        elif w.lower() not in _PARTICLES:  # a particle standing alone ("Van", "de"); "Le-Minh" is a given name
             out |= {t[0] for t in tokens if t not in family}
     return out
 

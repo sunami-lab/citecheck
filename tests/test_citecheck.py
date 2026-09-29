@@ -521,7 +521,9 @@ class NameTests(unittest.TestCase):
                               (["van der Maaten, Laurens"], ["Laurens van der Maaten"]), (["Smith"], ["John Smith"]),
                               (["Jean-Pierre Serre"], ["J.-P. Serre"]), (["Rohit Agrawal 0002"], ["Rohit Agrawal"]),
                               (["Garcia", "J. P."], ["J. Garcia"]),  # "Garcia, J. P." split in two
-                              (["Kieu, Le-Minh"], ["L. Kieu"]), (["Ke Chen"], ["Ke'ai Chen", "Jie Chen"])):
+                              (["Kieu, Le-Minh"], ["L. Kieu"]), (["Ke Chen"], ["Ke'ai Chen", "Jie Chen"]),
+                              (["Van der Maaten", "Hinton"], ["Laurens van der Maaten", "Geoffrey Hinton"]),
+                              (["Van Rossum"], ["Guido van Rossum"]), (["Da Silva"], ["Ana da Silva"])):
             self.assertEqual(cc.given_name_conflicts(cited, record), [], cited)
 
 
