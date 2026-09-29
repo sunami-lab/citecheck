@@ -254,9 +254,9 @@ def family_name(raw: str) -> str:
     return words[-1] if words else ""
 
 
-_ORG = re.compile(r"\b(ai|inc|llc|ltd|labs?|research|team|collaboration|consortium|council|institute|university|"
+_ORG = re.compile(r"\bAI\b|(?i:\b(inc|llc|ltd|labs?|research|team|collaboration|consortium|council|institute|university|"
                   r"department|foundation|agency|committee|association|society|organi[sz]ation|corporation|"
-                  r"company|ministry|government|white house|openai|anthropic|deepmind|google|microsoft|nvidia)\b", re.I)
+                  r"company|ministry|government|white house|openai|anthropic|deepmind|google|microsoft|nvidia)\b)")
 
 
 _KNOWN_ORGS = set("""google meta microsoft anthropic deepmind openai amazon apple ibm intel nvidia baidu alibaba tencent
@@ -283,8 +283,9 @@ def is_org(raw: str) -> bool:
 def _named_org(raw: str) -> bool:
     """Clearly an organisation, never a bare surname ("LeCun"): a braced name of two or more words, an
     organisation keyword ("Collaboration", "Institute") or a known organisation ("OpenAI")."""
+    raw = raw.strip()
     name = detex(raw).strip()
-    braced = raw.strip().startswith("{") and len(name.split()) >= 2
+    braced = raw.startswith("{") and _close_of(raw, 0) == len(raw) - 1 and len(name.split()) >= 2
     if not braced and "," in name:  # "Ai, Qingyao"
         return False
     return braced or bool(_ORG.search(name)) or norm(name) in _KNOWN_ORGS
@@ -326,8 +327,8 @@ def _initials(raw: str, family: set) -> set:
             continue
         if _INITIALS.fullmatch(w):  # "J.", "TJ", "J.-P."
             out |= {c.lower() for c in w if c.isalpha()}
-        else:
-            out |= {t[0] for t in tokens if t not in family and t not in _PARTICLES}
+        elif w not in _PARTICLES:  # "van", "de" as written; "Le-Minh" is a given name
+            out |= {t[0] for t in tokens if t not in family}
     return out
 
 

@@ -520,7 +520,8 @@ class NameTests(unittest.TestCase):
                               (["J. Robert Oppenheimer"], ["Robert Oppenheimer"]), (["Hastie TJ"], ["Trevor J. Hastie"]),
                               (["van der Maaten, Laurens"], ["Laurens van der Maaten"]), (["Smith"], ["John Smith"]),
                               (["Jean-Pierre Serre"], ["J.-P. Serre"]), (["Rohit Agrawal 0002"], ["Rohit Agrawal"]),
-                              (["Garcia", "J. P."], ["J. Garcia"])):  # "Garcia, J. P." split in two
+                              (["Garcia", "J. P."], ["J. Garcia"]),  # "Garcia, J. P." split in two
+                              (["Kieu, Le-Minh"], ["L. Kieu"]), (["Ke Chen"], ["Ke'ai Chen", "Jie Chen"])):
             self.assertEqual(cc.given_name_conflicts(cited, record), [], cited)
 
 
@@ -568,6 +569,11 @@ class VerdictTests(unittest.TestCase):
         r = self.run_check(e, crossref=[rec])
         self.assertEqual(r["verdict"], "VERIFIED", r["issues"])
 
+    def test_braced_family_name_keeps_the_truncated_list_check(self):
+        rec = cc._record("Crossref", "Survey Sampling", ["Leslie Kish", "A. Coauthor"], 1965)
+        r = self.run_check(entry(title="Survey Sampling", authors=["{Kish}, Leslie"], year=1965), crossref=[rec])
+        self.assertEqual(r["verdict"], "CHECK", r["issues"])
+
     def test_bare_surname_is_not_an_organisation(self):
         rec = cc._record("Crossref", "Deep learning", ["Yann LeCun", "Yoshua Bengio", "Geoffrey Hinton", "A B"], 2015)
         for author in ("LeCun", "McDonald"):
@@ -578,6 +584,12 @@ class VerdictTests(unittest.TestCase):
 
     def test_named_org_needs_more_than_a_keyword_surname(self):
         self.assertFalse(cc._named_org("Ai, Qingyao"))
+        for person in ("{Abbott}, B.~P.", "{Kish}, Leslie", "{Misner}, Charles W."):  # ADS-style braced family names
+            self.assertFalse(cc._named_org(person), person)
+        self.assertTrue(cc._named_org("{Qwen Team}"))
+        self.assertFalse(cc.is_org("Qingyao Ai"))
+        self.assertFalse(cc.is_org("Ke'ai Chen"))
+        self.assertTrue(cc.is_org("Meta AI"))
         self.assertTrue(cc._named_org("{LIGO Scientific Collaboration}"))
         fields, _ = cc.parse_ris("TY  - JOUR\nAU  - Smith, John and Doe, Jane\nTI  - A paper\nER  - \n")
         self.assertEqual(cc.to_entry(fields[0])["authors"], ["Smith, John", "Doe, Jane"])
