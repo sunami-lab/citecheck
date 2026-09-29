@@ -5,6 +5,7 @@ Sources are replaced with fakes, so nothing here touches the network.
 """
 import io
 import os
+import re
 import ssl
 import sys
 import tempfile
@@ -104,6 +105,9 @@ class TextTests(unittest.TestCase):
                          ["Happee, Riender", "de Winter, Joost CF"])
         self.assertEqual(cc.split_names("de Winter JCF, Happee R, Dodou D"), ["de Winter JCF", "Happee R", "Dodou D"])
         self.assertEqual(cc.split_names("Da Silva, Ana Maria and Smith, John"), ["Da Silva, Ana Maria", "Smith, John"])
+        for field in ("Le Song, Alex Smola", "Di He, Tie-Yan Liu", "Du Tran, Lubomir Bourdev"):
+            self.assertEqual(len(cc.split_names(field)), 2, field)
+        self.assertEqual(cc.split_names("De Winter, Joost CF"), ["De Winter, Joost CF"])
         self.assertEqual(cc.author_overlap(["Guo, Daya", "Yang, Dejian"], ["DeepSeek-AI"]), (None, []))
         self.assertEqual(cc.author_overlap(["{OpenCitations}"], ["Chiara Di Giambattista"]), (None, []))
 
@@ -256,6 +260,14 @@ class ReferenceManagerTests(unittest.TestCase):
                 entries, _ = cc.load_entries(path)
                 self.assertEqual(len(entries), 1, name)
 
+    def test_json_leniency(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "refs.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write('[{"title": "A paper", "author": "Smith, J", "year": 2020.0}]')
+            (e,), _ = cc.load_entries(path)
+            self.assertEqual((e["authors"], e["year"]), (["Smith, J"], 2020))
+
     def test_endnote_xml(self):
         fields, errors = cc.parse_endnote_xml(ENDNOTE)
         e = cc.to_entry(fields[0])
@@ -276,10 +288,10 @@ class ReferenceManagerTests(unittest.TestCase):
 
 class CommandLineTests(unittest.TestCase):
     def run_main(self, *argv):
-        err = io.StringIO()
-        with mock.patch.object(sys, "stderr", err), mock.patch.object(sys, "stdout", io.StringIO()):
+        err, out = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "stderr", err), mock.patch.object(sys, "stdout", out):
             code = cc.main(list(argv))
-        return code, err.getvalue()
+        return code, err.getvalue() + out.getvalue()
 
     def test_unreadable_input_is_an_error_not_a_clean_bill(self):
         with tempfile.TemporaryDirectory() as d:
@@ -288,7 +300,8 @@ class CommandLineTests(unittest.TestCase):
                      "strings.json": '["Attention is all you need"]', "null.json": "[null]",
                      "s2.json": '[{"title": "A paper", "authors": [{"name": "Ann Lee"}]}]',
                      "numdoi.json": '[{"title": "A paper", "doi": 10.1038}]',
-                     "csl.json": '[{"title": "A paper", "author": [{"family": "Smith"}], "issued": {"date-parts": [[2011]]}}]'}
+                     "csl.json": '[{"title": "A paper", "author": [{"family": "Smith"}], "issued": {"date-parts": [[2011]]}}]',
+                     "numauthors.json": '[{"title": "A paper", "authors": 5}]'}
             for name, text in cases.items():
                 path = os.path.join(d, name)
                 with open(path, "w", encoding="utf-8") as fh:
@@ -296,6 +309,17 @@ class CommandLineTests(unittest.TestCase):
                 code, err = self.run_main(path)
                 self.assertEqual(code, 2, name)
                 self.assertIn(name, err)
+
+    def test_binary_and_lookalike_files_are_not_bibtex(self):
+        with tempfile.TemporaryDirectory() as d:
+            cases = {"paper.pdf": b"%PDF-1.4\n1 0 obj @article{x, title={y}}", "notes.docx": b"PK\x03\x04\x00\x00@misc{a,",
+                     "stdin": b"\x00\x01binary @article{x, title={y}}", "macros": b"\\def\\@maketitle{\\title}",
+                     "code.txt": b"@dataclass(frozen=True, order=True)\nclass A: pass\n"}
+            for name, data in cases.items():
+                path = os.path.join(d, name)
+                with open(path, "wb") as fh:
+                    fh.write(data)
+                self.assertEqual(self.run_main(path)[0], 2, name)
 
     def test_nothing_cited_is_an_error(self):
         with tempfile.TemporaryDirectory() as d:
@@ -332,6 +356,34 @@ class CommandLineTests(unittest.TestCase):
                 code, err = self.run_main(os.path.join(d, "ch1.ris"), os.path.join(d, "ch2.ris"))
             self.assertIn("smith2020deep\n", err)
             self.assertIn("smith2020deepb\n", err)
+
+    def test_made_up_keys_never_displace_a_reference(self):
+        ris = "TY  - JOUR\nAU  - Smith, J\nTI  - Deep nets {n}\nPY  - 2020\nER  - \n"
+        with tempfile.TemporaryDirectory() as d:
+            files = {"a.ris": ris.format(n=1), "b.ris": ris.format(n=2) + ris.format(n=3),
+                     "c.bib": "@article{smith2020deep, title={Deep nets 4}, author={Smith, J}, year={2020}}",
+                     "d.json": '[{"title": "Paper five"}]', "e.json": '[{"title": "Paper six"}]'}
+            for name, text in files.items():
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            with self.fake_checker():
+                code, out = self.run_main(*[os.path.join(d, n) for n in sorted(files)])
+            keys = re.findall(r"VERIFIED\s+(\S+)", out.split("citecheck ")[0])
+            self.assertEqual(len(keys), 6, out)
+            self.assertEqual(len(set(keys)), 6, keys)
+            self.assertIn("smith2020deep", keys)  # the .bib entry keeps its own key
+
+    def test_cited_entry_that_cannot_be_parsed(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "refs.bib"), "w", encoding="utf-8") as fh:
+                fh.write("@article{good, title={A}, author={B, C}, year={2020}}\n@article{bad, title={A\n")
+            with open(os.path.join(d, "main.tex"), "w", encoding="utf-8") as fh:
+                fh.write("\\cite{good,bad}")
+            with self.fake_checker():
+                code, out = self.run_main(d)
+            self.assertEqual(code, 3)
+            self.assertIn("could not be parsed: bad", out)
+            self.assertNotIn("not in the bibliography: bad", out)
 
     def test_output_path_that_is_a_folder_is_an_error(self):
         with tempfile.TemporaryDirectory() as d:
@@ -440,6 +492,12 @@ class VerdictTests(unittest.TestCase):
             self.assertEqual(r["verdict"], "CHECK", author)
         r = self.run_check(entry(title="Deep learning", authors=["OpenAI"], year=2015), crossref=[rec])
         self.assertFalse(any("without 'and others'" in i for i in r["issues"]))
+
+    def test_named_org_needs_more_than_a_keyword_surname(self):
+        self.assertFalse(cc._named_org("Ai, Qingyao"))
+        self.assertTrue(cc._named_org("{LIGO Scientific Collaboration}"))
+        fields, _ = cc.parse_ris("TY  - JOUR\nAU  - Smith, John and Doe, Jane\nTI  - A paper\nER  - \n")
+        self.assertEqual(cc.to_entry(fields[0])["authors"], ["Smith, John", "Doe, Jane"])
 
     def test_chimeric_authors_mismatch(self):
         r = self.run_check(entry(authors=["Smith, John", "Doe, Jane"]), s2=[REAL])  # chimeric

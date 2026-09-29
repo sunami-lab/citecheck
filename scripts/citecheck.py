@@ -205,10 +205,17 @@ def split_names(field: str) -> list:
         i += 1
     names.append("".join(buf))
     split = []
+    # a field written "Last, First" elsewhere ("Smith, John") makes "Da Silva, Ana Maria" one name, while
+    # "Le Song, Alex Smola" on its own is two people
+    last_first_field = any(len(p) == 2 and len(p[0].split()) == 1 and p[1]
+                           for p in ([q.strip() for q in n.split(",")] for n in names))
     for n in names:  # "Franz Aichberger, Lily Chen, and John Smith": full names separated by commas
         pieces = [p.strip() for p in n.split(",")]
         filled = [p for p in pieces if p]
-        last_first = (len(filled) == 2 and filled[0].split()[0].lower() in _PARTICLES
+        first = filled[0].split()[0] if filled else ""
+        particle = first in _PARTICLES or first.lower() in _CASED_PARTICLES or (
+            first.lower() in _PARTICLES and last_first_field)
+        last_first = (len(filled) == 2 and particle
                       and not _INITIALS.fullmatch(filled[0].split()[-1]))  # "de Winter, Joost CF" is one name
         if "{" not in n and len(filled) >= 2 and all(len(p.split()) >= 2 for p in filled) and not last_first:
             split += filled
@@ -266,6 +273,8 @@ def _named_org(raw: str) -> bool:
     organisation keyword ("Collaboration", "Institute") or a known organisation ("OpenAI")."""
     name = detex(raw).strip()
     braced = raw.strip().startswith("{") and len(name.split()) >= 2
+    if not braced and "," in name:  # "Ai, Qingyao"
+        return False
     return braced or bool(_ORG.search(name)) or norm(name) in _KNOWN_ORGS
 
 
@@ -290,6 +299,7 @@ def author_overlap(cited: list, record: list):
     return round(1 - len(missing) / len(cited), 3), missing
 
 
+_CASED_PARTICLES = {"van", "von", "der", "den", "de", "del", "della", "dos", "das"}  # rarely a given name
 _PARTICLES = {"van", "von", "der", "den", "de", "del", "della", "di", "da", "du", "la", "le", "dos", "das",
               "jr", "sr", "ii", "iii", "iv"}
 _INITIALS = re.compile(r"(?:[A-Z]\.?-?){1,3}")
@@ -390,6 +400,11 @@ def _read_value(text: str, pos: int, macros: dict):
         return "".join(parts), pos
 
 
+class ParseError(str):
+    """A message about an entry that could not be parsed, carrying the entry's key when it was read."""
+    key = ""
+
+
 def parse_bibtex(text: str):
     """Parse BibTeX -> (entries, errors). Entries are dicts of lowercased field names plus
     'key' and 'type'. Handles nested braces, quoted values, @string macros and '#'
@@ -402,7 +417,7 @@ def parse_bibtex(text: str):
         if not m:
             return entries, errors
         kind, close = m.group(1).lower(), "}" if m.group(2) == "{" else ")"
-        pos = m.end()
+        pos, key = m.end(), ""
         try:
             if kind == "comment":
                 pos = _close_of(text, m.end() - 1) + 1 if m.group(2) == "{" else pos
@@ -417,7 +432,8 @@ def parse_bibtex(text: str):
                 continue
             ends = [i for i in (text.find(",", pos), text.find(close, pos)) if i >= 0]
             key_end = min(ends)
-            fields = {"type": kind, "key": text[pos:key_end].strip()}
+            key = text[pos:key_end].strip()
+            fields = {"type": kind, "key": key}
             pos = key_end
             while True:
                 pos = _skip_ws(text, pos)
@@ -438,7 +454,10 @@ def parse_bibtex(text: str):
             entries.append(fields)
         except (ValueError, IndexError, AttributeError) as err:
             line = text.count("\n", 0, m.start()) + 1
-            errors.append(f"line {line}: could not parse @{kind} entry ({err or 'truncated'})")
+            error = ParseError(f"line {line}: could not parse @{kind} entry{' ' + key if key else ''} "
+                               f"({err or 'truncated'})")
+            error.key = key
+            errors.append(error)
 
 
 # ---------------------------------------------------------------- identifiers
@@ -497,7 +516,8 @@ def to_entry(f: dict) -> dict:
         "venue_text": detex(" ".join(f.get(k, "") for k in ("journal", "booktitle", "howpublished", "institution",
                                                              "school", "note", "type"))),
         "etal": bool(re.search(r"\band\s+others\b|\bet\.?\s+al\b", f.get("author", ""), re.I)),
-        "generated": bool(f.get("generated")),  # key made up by citecheck (RIS, EndNote)
+        "generated": bool(f.get("generated")),  # key made up by citecheck (RIS, EndNote, JSON without keys)
+        "key_base": f.get("key_base", ""),
     }
 
 
@@ -521,7 +541,8 @@ def _reference_fields(i, typ, key, title, authors, year, container, doi, url, no
     """Fields of a reference-manager record, named as in BibTeX."""
     f = {"key": key or f"ref{i}", "type": typ, "title": title, "year": year, "doi": doi, "url": url,
          "annote": note,  # free text: never searched for a DOI or arXiv ID
-         "author": " and ".join(f"{{{a}}}" if re.search(r"\band\b", a, re.I) else a for a in authors)}
+         "author": " and ".join(f"{{{a}}}" if re.search(r"\band\b", a, re.I) and "," not in a else a
+                                for a in authors)}
     f["journal" if typ == "article" else "booktitle"] = container
     return f
 
@@ -541,7 +562,8 @@ def _readable_keys(fields: list) -> list:
         authors = split_names(f["author"])
         word = next((w for w in norm(f["title"]).split() if w not in _STOP), "")
         base = (family_name(authors[0]).replace(" ", "") if authors else "") + str(_year(f["year"]) or "") + word
-        f["key"] = _free_key(base or f["key"], taken)
+        f["key_base"] = base or f["key"]
+        f["key"] = _free_key(f["key_base"], taken)
         f["generated"] = True
         taken.add(f["key"])
     return fields
@@ -598,6 +620,12 @@ def parse_endnote_xml(text: str):
     return _readable_keys(fields), ([] if fields else ["no EndNote records found"])
 
 
+_BIBTEX_ENTRY = re.compile(r"^\s*@(article|book|booklet|conference|inbook|incollection|inproceedings|manual|"
+                           r"mastersthesis|misc|phdthesis|proceedings|techreport|unpublished|online|electronic|www|"
+                           r"software|dataset|thesis|report|patent|standard|collection|string|preamble)\s*[{(]",
+                           re.I | re.M)
+
+
 def load_entries(path: str):
     with open(path, encoding="utf-8-sig", errors="replace") as fh:
         text = fh.read()
@@ -610,7 +638,9 @@ def load_entries(path: str):
         return [to_entry(f) for f in fields], errors
     if lower.endswith(".json"):
         return json_entries(path, text), []
-    if lower.endswith((".bib", ".bibtex")) or re.search(r"@[A-Za-z]+\s*[{(]", text):  # also /dev/stdin, refs.txt
+    if lower.endswith((".bib", ".bibtex")) or (  # also /dev/stdin, <(...), refs.txt
+            os.path.splitext(lower)[1] in ("", ".txt") and "\x00" not in text
+            and not text.startswith(("%PDF", "PK\x03\x04")) and _BIBTEX_ENTRY.search(text)):
         fields, errors = parse_bibtex(text)
         return [to_entry(f) for f in fields], errors
     raise InputError(f"{path}: unsupported file type. Give a .bib, .json, .ris or EndNote .xml file, a paper "
@@ -631,18 +661,24 @@ def json_entries(path: str, text: str) -> list:
     for i, d in enumerate(data, 1):
         if not isinstance(d, dict):
             raise InputError(f"{path}: reference {i} is not an object with a title and authors")
+        if "authors" not in d and isinstance(d.get("author"), str):  # a common slip for "authors"
+            d = dict(d, authors=d["author"])
         if "authors" not in d and ("author" in d or "issued" in d):
             raise InputError(f"{path}: this looks like CSL-JSON (Zotero's JSON export), which citecheck does not "
                              "read; export RIS or BibTeX instead")
         authors = d.get("authors") or []
         text_fields = all(d.get(k) is None or isinstance(d[k], (str, int)) for k in
-                          ("key", "title", "year", "venue", "doi", "arxiv", "url"))
-        if not text_fields or not (isinstance(authors, str) or all(isinstance(a, str) for a in authors)):
+                          ("key", "title", "venue", "doi", "arxiv", "url"))
+        year_ok = d.get("year") is None or isinstance(d["year"], (str, int, float))
+        names_ok = isinstance(authors, str) or (isinstance(authors, list) and all(isinstance(a, str) for a in authors))
+        if not (text_fields and year_ok and names_ok):
             raise InputError(f'{path}: reference {i}: fields must be text, and "authors" a list of names')
         f = {"key": str(d.get("key") or f"ref{i}"), "type": "json", "title": str(d.get("title") or ""),
              "author": authors if isinstance(authors, str) else " and ".join(authors),
              "year": str(d.get("year") or ""), "doi": str(d.get("doi") or ""), "eprint": str(d.get("arxiv") or ""),
              "url": str(d.get("url") or ""), "journal": str(d.get("venue") or "")}
+        if not d.get("key"):
+            f.update(generated=True, key_base=f["key"])
         entries.append(to_entry(f))
     return entries
 
@@ -1540,6 +1576,27 @@ def split_inputs(inputs: list, cited_in):
     return moved, [p for p in cited_in if p not in moved]
 
 
+def assign_keys(files: list):
+    """Merge the entries of several files. Your own keys are kept (a duplicate keeps its first entry); a key
+    citecheck made up (RIS, EndNote, JSON without keys) gets the first free variant of its base, so it never
+    displaces another reference. Returns (entries, duplicate keys)."""
+    taken = {e["key"] for loaded in files for e in loaded if not e["generated"]}
+    entries, earlier, dupes = [], set(), set()
+    for loaded in files:
+        here = set()
+        for e in loaded:
+            if e["generated"]:
+                e["key"] = _free_key(e["key_base"] or e["key"], taken)
+                taken.add(e["key"])
+            elif e["key"] in earlier:
+                dupes.add(e["key"])
+                continue
+            here.add(e["key"])
+            entries.append(e)
+        earlier |= here
+    return entries, sorted(dupes)
+
+
 def prepare_outputs(paths: list):
     """Create the folders of the output files before the run, so a long run cannot fail at the end."""
     for p in paths:
@@ -1593,19 +1650,16 @@ def main(argv=None):
         try:
             prepare_outputs([args.json, args.fixes, args.claims])
             bibs, roots = collect_inputs(args.inputs, tmp)
-            entries, extra, seen, unparsed = [], [], set(), 0
+            files, extra, errors, unparsed_keys = [], [], [], set()
             for path in bibs:
                 loaded, errors = load_entries(path)
                 extra += [f"  warning: {os.path.basename(path)}: {e}" for e in errors]
-                unparsed += len(errors)
-                for e in loaded:  # a key citecheck made up (RIS, EndNote) that another file already used
-                    if e["generated"] and e["key"] in seen:
-                        e["key"] = _free_key(e["key"], seen)
-                dupes = sorted({e["key"] for e in loaded if e["key"] in seen})
-                if dupes:
-                    extra.append(f"  warning: duplicate keys (first one kept): {', '.join(dupes)}")
-                entries += [e for e in loaded if e["key"] not in seen]
-                seen.update(e["key"] for e in loaded)
+                unparsed_keys |= {getattr(e, "key", "") or f"?{path}:{i}" for i, e in enumerate(errors)}
+                files.append(loaded)
+            entries, dupes = assign_keys(files)
+            seen = {e["key"] for e in entries}
+            if dupes:
+                extra.append(f"  warning: duplicate keys (first one kept): {', '.join(dupes)}")
             if not entries:
                 raise InputError(f"no references found in {', '.join(args.inputs)}"
                                  + (f" ({errors[0]})" if errors else ""))
@@ -1615,8 +1669,13 @@ def main(argv=None):
         except (InputError, OSError, ValueError, zipfile.BadZipFile) as err:
             print(f"citecheck: {err}", file=sys.stderr)
             return 2
+    unparsed = len(unparsed_keys)
     if "*" not in cited:
-        missing = sorted(cited - seen)
+        broken = sorted(cited & unparsed_keys)
+        missing = sorted(cited - seen - unparsed_keys)
+        unparsed = len(broken)  # an entry the paper does not cite does not matter
+        if broken:
+            extra.append(f"  warning: cited but could not be parsed: {', '.join(broken)}")
         total, entries = len(entries), [e for e in entries if e["key"] in cited]
         if not entries:
             print(f"citecheck: none of the {total} entries in the bibliography is cited in the sources; "
@@ -1669,8 +1728,7 @@ def main(argv=None):
         with open(args.json, "w", encoding="utf-8") as fh:
             json.dump({"version": __version__, "inputs": args.inputs, "duplicates": duplicates(results),
                        "results": results}, fh, indent=2, ensure_ascii=False)
-    # an entry that could not be parsed matters only when every entry is checked; otherwise its key is unknown
-    return exit_status((r["verdict"] for r in results), unparsed if "*" in cited else 0)
+    return exit_status((r["verdict"] for r in results), unparsed)
 
 
 if __name__ == "__main__":
