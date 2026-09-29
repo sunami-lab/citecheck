@@ -113,6 +113,7 @@ class TextTests(unittest.TestCase):
         self.assertEqual(cc.split_names("van der BERG, Jan Willem"), ["van der BERG, Jan Willem"])
         self.assertEqual(cc.split_names("van der BERG, J. W."), ["van der BERG, J. W."])
         self.assertEqual(cc.split_names("DE LUCA, Maria G. and Smith, J."), ["DE LUCA, Maria G.", "Smith, J."])
+        self.assertEqual(cc.split_names("de Winter JCF, SMITH J"), ["de Winter JCF", "SMITH J"])
         self.assertEqual(cc.author_overlap(["Guo, Daya", "Yang, Dejian"], ["DeepSeek-AI"]), (None, []))
         self.assertEqual(cc.author_overlap(["{OpenCitations}"], ["Chiara Di Giambattista"]), (None, []))
 
@@ -280,6 +281,9 @@ class ReferenceManagerTests(unittest.TestCase):
         self.assertEqual(a["authors"], ["{World Health Organization}"])
         self.assertEqual(b["authors"], ["{Department of Health and Human Services}"])
         self.assertEqual(cc._manager_author("Smith, John,"), "Smith, John")
+        self.assertEqual(cc._manager_author("Tanaka, Ai,"), "Tanaka, Ai")
+        for company in ("Pfizer, Inc.,", "Novartis, AG,"):
+            self.assertEqual(cc._manager_author(company), "{" + company.rstrip(",") + "}")
         for org in ("University of California, San Francisco,", "National Academies of Sciences, Engineering, and Medicine,"):
             self.assertEqual(cc._manager_author(org), "{" + org.rstrip(",") + "}")
 

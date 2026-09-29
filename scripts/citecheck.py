@@ -190,6 +190,17 @@ def venue_ids(text: str) -> set:
             | {v for pat, group in _VENUE_GROUPS if pat.search(t) for v in group})
 
 
+def _vancouver_piece(piece: str) -> bool:
+    """'Winter JCFW' or 'SMITH J': a family name, not a particle ('DE LUCA', 'van der BERG'), then initials.
+    Four capitals count as initials only after a mixed-case name."""
+    words = piece.split()
+    if len(words) < 2 or words[-2].lower() in _PARTICLES:
+        return False
+    initials = re.fullmatch(r"(?:[A-Z]\.?-?){1,4}", words[-1])
+    letters = sum(c.isalpha() for c in words[-1])
+    return bool(initials) and (letters <= 3 or any(c.islower() for c in words[-2]))
+
+
 def split_names(field: str) -> list:
     """BibTeX author field -> raw names, splitting on 'and' outside braces."""
     names, buf, depth, i = [], [], 0, 0
@@ -216,9 +227,7 @@ def split_names(field: str) -> list:
         first = filled[0].split()[0] if filled else ""
         particle = first in _PARTICLES or first.lower() in _CASED_PARTICLES or (
             first.lower() in _PARTICLES and last_first_field)
-        vancouver = len(filled) == 2 and all(
-            len(q.split()) >= 2 and re.fullmatch(r"(?:[A-Z]\.?-?){1,4}", q.split()[-1])
-            and q.split()[-2][:1].isupper() and any(c.islower() for c in q.split()[-2]) for q in filled)
+        vancouver = len(filled) == 2 and all(_vancouver_piece(q) for q in filled)
         last_first = len(filled) == 2 and particle and not vancouver  # "de Winter, Joost CF" is one name
         if "{" not in n and len(filled) >= 2 and all(len(p.split()) >= 2 for p in filled) and not last_first:
             split += filled
@@ -547,8 +556,9 @@ def _manager_author(name: str) -> str:
     name = name.strip()
     if name.endswith(","):
         name = name.rstrip(", ")
-        family = name.split(",")[0]
-        person = name.count(",") == 1 and len(family.split()) <= 3 and not _ORG.search(family)
+        family, given = name.split(",")[0], name.split(",")[-1]
+        company = re.fullmatch(r"\s*(inc|llc|ltd|gmbh|ag|plc|corp|co)\.?\s*", given, re.I)  # "Pfizer, Inc."
+        person = name.count(",") == 1 and len(family.split()) <= 3 and not _ORG.search(family) and not company
         return name if person else "{" + name + "}"  # "Smith, John," is a person
     if re.search(r"\band\b", name, re.I) and "," not in name:
         return "{" + name + "}"

@@ -19,6 +19,9 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Offline tests
         run: python -m unittest discover tests
+      - name: Piped input
+        if: runner.os != 'Windows'
+        run: python -c "import sys, tempfile; sys.path.insert(0, 'scripts'); import citecheck as cc; bibs, _ = cc.collect_inputs(['/dev/stdin'], tempfile.mkdtemp()); n = len(cc.load_entries(bibs[0])[0]); print(n, 'entries from /dev/stdin'); sys.exit(n != 5)" < examples/refs.bib
       - name: Install and run the command
         run: |
           python -m pip install .
