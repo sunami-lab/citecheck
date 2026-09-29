@@ -2,13 +2,15 @@
 
 > Catches hallucinated references before your reviewers do.
 
+**Version 0.4.1** · on PyPI as [`citecheck-refs`](https://pypi.org/project/citecheck-refs/): `pip install citecheck-refs` · [release notes](https://github.com/sunami-lab/citecheck/releases/tag/v0.4.1)
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/sunami-lab/citecheck/main/assets/banner.png" alt="citecheck checking five references: two verified, one fabricated paper not found, one real title with the wrong authors, one wrong year" width="900">
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/citecheck-refs/"><img src="https://img.shields.io/pypi/v/citecheck-refs?style=flat-square&label=PyPI&color=3775a9" alt="citecheck-refs on PyPI"></a>
   <a href="#install"><img src="https://img.shields.io/badge/Claude_Code-plugin-d97757?style=flat-square" alt="Claude Code plugin"></a>
-  <a href="https://pypi.org/project/citecheck-refs/"><img src="https://img.shields.io/pypi/v/citecheck-refs?style=flat-square&label=pypi&color=0a0a0c" alt="citecheck-refs on PyPI"></a>
   <a href="https://github.com/sunami-lab/citecheck/blob/main/scripts/citecheck.py"><img src="https://img.shields.io/badge/python-3.8%2B-0a0a0c?style=flat-square" alt="Python 3.8+"></a>
   <a href="https://github.com/sunami-lab/citecheck/blob/main/scripts/citecheck.py"><img src="https://img.shields.io/badge/dependencies-0-0a0a0c?style=flat-square" alt="Zero dependencies"></a>
   <a href="#does-it-work"><img src="https://img.shields.io/badge/HALLMARK_F1-0.967-3ecf8e?style=flat-square" alt="HALLMARK test F1 0.967"></a>
