@@ -111,6 +111,8 @@ class TextTests(unittest.TestCase):
         self.assertEqual(cc.split_names("De Winter, Joost CF"), ["De Winter, Joost CF"])
         self.assertEqual(cc.split_names("de Winter JCFW, Happee R"), ["de Winter JCFW", "Happee R"])
         self.assertEqual(cc.split_names("van der BERG, Jan Willem"), ["van der BERG, Jan Willem"])
+        self.assertEqual(cc.split_names("van der BERG, J. W."), ["van der BERG, J. W."])
+        self.assertEqual(cc.split_names("DE LUCA, Maria G. and Smith, J."), ["DE LUCA, Maria G.", "Smith, J."])
         self.assertEqual(cc.author_overlap(["Guo, Daya", "Yang, Dejian"], ["DeepSeek-AI"]), (None, []))
         self.assertEqual(cc.author_overlap(["{OpenCitations}"], ["Chiara Di Giambattista"]), (None, []))
 
@@ -278,6 +280,8 @@ class ReferenceManagerTests(unittest.TestCase):
         self.assertEqual(a["authors"], ["{World Health Organization}"])
         self.assertEqual(b["authors"], ["{Department of Health and Human Services}"])
         self.assertEqual(cc._manager_author("Smith, John,"), "Smith, John")
+        for org in ("University of California, San Francisco,", "National Academies of Sciences, Engineering, and Medicine,"):
+            self.assertEqual(cc._manager_author(org), "{" + org.rstrip(",") + "}")
 
     def test_bibtex_sniffing_accepts_biblatex_types(self):
         with tempfile.TemporaryDirectory() as d:
@@ -285,6 +289,9 @@ class ReferenceManagerTests(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("% exported\n\n@mvbook{k, title={A}, author={B, C}, year={2020}}\n@article{\n  k2,\n  title={B}}\n")
             self.assertEqual(len(cc.load_entries(path)[0]), 2)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("@article{12,\n  title={Numeric keys}, author={B, C}, year={2020}}\n")
+            self.assertEqual(len(cc.load_entries(path)[0]), 1)
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("@retry(3, delay=1)\ndef fetch(): pass\n")
             with self.assertRaises(cc.InputError):
@@ -435,6 +442,25 @@ class CommandLineTests(unittest.TestCase):
             with self.fake_checker():
                 code, out = self.run_main(z, z, "--all")
             self.assertNotIn("duplicate keys", out)
+
+    @unittest.skipIf(os.name == "nt", "named pipes are POSIX")
+    def test_piped_input_is_read(self):
+        with tempfile.TemporaryDirectory() as d:
+            fifo = os.path.join(d, "stdin")
+            os.mkfifo(fifo)
+            import threading
+            def feed():
+                with open(fifo, "w", encoding="utf-8") as fh:
+                    fh.write("@article{a, title={A}, author={B, C}, year={2020}}\n")
+            threading.Thread(target=feed, daemon=True).start()
+            found = []
+            def read():  # a pipe that was already drained would block here forever
+                bibs, _ = cc.collect_inputs([fifo], d)
+                found.extend(cc.load_entries(bibs[0])[0])
+            reader = threading.Thread(target=read, daemon=True)
+            reader.start()
+            reader.join(timeout=5)
+            self.assertEqual(len(found), 1, "the pipe was consumed before it was parsed")
 
     def test_output_path_that_is_a_folder_is_an_error(self):
         with tempfile.TemporaryDirectory() as d:

@@ -216,7 +216,9 @@ def split_names(field: str) -> list:
         first = filled[0].split()[0] if filled else ""
         particle = first in _PARTICLES or first.lower() in _CASED_PARTICLES or (
             first.lower() in _PARTICLES and last_first_field)
-        vancouver = len(filled) == 2 and all(re.fullmatch(r"(?:[A-Z]\.?-?){1,4}", q.split()[-1]) for q in filled)
+        vancouver = len(filled) == 2 and all(
+            len(q.split()) >= 2 and re.fullmatch(r"(?:[A-Z]\.?-?){1,4}", q.split()[-1])
+            and q.split()[-2][:1].isupper() and any(c.islower() for c in q.split()[-2]) for q in filled)
         last_first = len(filled) == 2 and particle and not vancouver  # "de Winter, Joost CF" is one name
         if "{" not in n and len(filled) >= 2 and all(len(p.split()) >= 2 for p in filled) and not last_first:
             split += filled
@@ -545,7 +547,9 @@ def _manager_author(name: str) -> str:
     name = name.strip()
     if name.endswith(","):
         name = name.rstrip(", ")
-        return name if "," in name else "{" + name + "}"  # "Smith, John," is a person
+        family = name.split(",")[0]
+        person = name.count(",") == 1 and len(family.split()) <= 3 and not _ORG.search(family)
+        return name if person else "{" + name + "}"  # "Smith, John," is a person
     if re.search(r"\band\b", name, re.I) and "," not in name:
         return "{" + name + "}"
     return name
@@ -633,7 +637,7 @@ def parse_endnote_xml(text: str):
     return _readable_keys(fields), ([] if fields else ["no EndNote records found"])
 
 
-_BIBTEX_ENTRY = re.compile(r"^[ \t]*@[A-Za-z]+[ \t]*[{(]\s*(?!\d+\s*,)[^\s,=(){}\"]+\s*,", re.M)  # "@mvbook{key,"
+_BIBTEX_ENTRY = re.compile(r"^[ \t]*@[A-Za-z]+[ \t]*[{(]\s*[^\s,=(){}\"]+\s*,", re.M)  # "@mvbook{key,"
 
 
 def load_entries(path: str):
@@ -650,7 +654,8 @@ def load_entries(path: str):
         return json_entries(path, text), []
     if lower.endswith((".bib", ".bibtex")) or (  # also /dev/stdin, <(...), refs.txt
             os.path.splitext(lower)[1] in ("", ".txt") and "\x00" not in text
-            and not text.startswith(("%PDF", "PK\x03\x04")) and _BIBTEX_ENTRY.search(text)):
+            and not text.startswith(("%PDF", "PK\x03\x04")) and _BIBTEX_ENTRY.search(text)
+            and re.search(r"\btitle\s*=", text, re.I)):
         fields, errors = parse_bibtex(text)
         return [to_entry(f) for f in fields], errors
     raise InputError(f"{path}: unsupported file type. Give a .bib, .json, .ris or EndNote .xml file, a paper "
@@ -812,8 +817,10 @@ def collect_inputs(paths: list, tmpdir: str):
         else:
             found = [p]
         for f in found:  # a file given twice, found in a given folder too, or with the same content, is read once
-            with open(f, "rb") as fh:
-                ids = {os.path.realpath(f), hashlib.sha1(fh.read()).hexdigest()}
+            ids = {os.path.realpath(f)}
+            if os.path.isfile(f):  # never read a pipe (/dev/stdin) here: it can be read only once
+                with open(f, "rb") as fh:
+                    ids.add(hashlib.sha1(fh.read()).hexdigest())
             if not ids & real:
                 bibs.append(f)
             real |= ids
