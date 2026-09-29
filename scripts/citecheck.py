@@ -828,7 +828,8 @@ def collect_inputs(paths: list, tmpdir: str):
             found = [p]
         for f in found:  # a file given twice, found in a given folder too, or with the same content, is read once
             ids = {os.path.realpath(f)}
-            if os.path.isfile(f):  # never read a pipe (/dev/stdin) here: it can be read only once
+            device = any(x.startswith(("/dev/", "/proc/")) for x in (f, os.path.realpath(f)))
+            if os.path.isfile(f) and not device:  # /dev/stdin is read once: on macOS even a redirected file
                 with open(f, "rb") as fh:
                     ids.add(hashlib.sha1(fh.read()).hexdigest())
             if not ids & real:
