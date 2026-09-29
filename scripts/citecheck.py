@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import gzip
+import hashlib
 import html
 import http.client
 import json
@@ -215,8 +216,8 @@ def split_names(field: str) -> list:
         first = filled[0].split()[0] if filled else ""
         particle = first in _PARTICLES or first.lower() in _CASED_PARTICLES or (
             first.lower() in _PARTICLES and last_first_field)
-        last_first = (len(filled) == 2 and particle
-                      and not re.fullmatch(r"(?:[A-Z]\.?-?){1,4}", filled[0].split()[-1]))  # "de Winter, Joost CF"
+        vancouver = len(filled) == 2 and all(re.fullmatch(r"(?:[A-Z]\.?-?){1,4}", q.split()[-1]) for q in filled)
+        last_first = len(filled) == 2 and particle and not vancouver  # "de Winter, Joost CF" is one name
         if "{" not in n and len(filled) >= 2 and all(len(p.split()) >= 2 for p in filled) and not last_first:
             split += filled
         else:
@@ -543,7 +544,8 @@ def _manager_author(name: str) -> str:
     ("World Health Organization,"); an organisation whose name contains "and" is braced so it stays one."""
     name = name.strip()
     if name.endswith(","):
-        return "{" + name.rstrip(", ") + "}"
+        name = name.rstrip(", ")
+        return name if "," in name else "{" + name + "}"  # "Smith, John," is a person
     if re.search(r"\band\b", name, re.I) and "," not in name:
         return "{" + name + "}"
     return name
@@ -631,7 +633,7 @@ def parse_endnote_xml(text: str):
     return _readable_keys(fields), ([] if fields else ["no EndNote records found"])
 
 
-_BIBTEX_ENTRY = re.compile(r"^[ \t]*@[A-Za-z]+[ \t]*[{(][ \t]*[^\s,=(){}\"]+[ \t]*,", re.M)  # "@mvbook{key,"
+_BIBTEX_ENTRY = re.compile(r"^[ \t]*@[A-Za-z]+[ \t]*[{(]\s*(?!\d+\s*,)[^\s,=(){}\"]+\s*,", re.M)  # "@mvbook{key,"
 
 
 def load_entries(path: str):
@@ -809,10 +811,12 @@ def collect_inputs(paths: list, tmpdir: str):
             roots.append(p)
         else:
             found = [p]
-        for f in found:  # a file given twice, or also found in a given folder, is read once
-            if os.path.realpath(f) not in real:
+        for f in found:  # a file given twice, found in a given folder too, or with the same content, is read once
+            with open(f, "rb") as fh:
+                ids = {os.path.realpath(f), hashlib.sha1(fh.read()).hexdigest()}
+            if not ids & real:
                 bibs.append(f)
-                real.add(os.path.realpath(f))
+            real |= ids
     return bibs, roots
 
 
